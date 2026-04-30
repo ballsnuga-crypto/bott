@@ -632,6 +632,7 @@ class EconomyCog(commands.Cog):
         self._data: dict[str, dict[str, Any]] = {}
         self._last_mtime_ns: int = 0
         self._supabase: Optional[SupabaseClient] = None
+        self._last_supabase_error: str = ""
         self._dirty: bool = False
         self._crash_users: set[int] = set()
         self._bj_users: set[int] = set()
@@ -661,12 +662,15 @@ class EconomyCog(commands.Cog):
             or SUPABASE_KEY
         )
         if not url or not key:
+            self._last_supabase_error = "missing SUPABASE_URL or SUPABASE_KEY/SUPABASE_SERVICE_ROLE_KEY"
             return None
         try:
             self._supabase = create_supabase_client(url, key)
+            self._last_supabase_error = ""
             print("[economy] Supabase client connected (wallets + website sync).")
             return self._supabase
         except Exception as e:
+            self._last_supabase_error = f"client init failed: {e}"
             print(f"[economy] Supabase connection failed: {e}")
             return None
 
@@ -715,9 +719,11 @@ class EconomyCog(commands.Cog):
             return False
         try:
             sb.table("economy_wallets").upsert(payload, on_conflict="guild_id,user_id").execute()
+            self._last_supabase_error = ""
             print(f"[economy] supabase upsert {len(payload)} wallet row(s)")
             return True
-        except Exception:
+        except Exception as e:
+            self._last_supabase_error = f"upsert failed: {e}"
             print(f"[economy] supabase upsert failed ({len(payload)} row(s)):")
             traceback.print_exc()
             return False
@@ -1193,10 +1199,20 @@ class EconomyCog(commands.Cog):
                 delete_after=22,
             )
         else:
+            url = os.getenv("SUPABASE_URL", "").strip() or SUPABASE_URL
+            has_url = bool(url)
+            has_key = bool(
+                os.getenv("SUPABASE_KEY", "").strip()
+                or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+                or SUPABASE_KEY
+            )
+            hint = self._last_supabase_error or "no detailed error captured; check Railway logs."
             await ctx.send(
-                f"{E['x']} Supabase write failed. On Railway set **SUPABASE_URL** + "
-                f"**SUPABASE_SERVICE_ROLE_KEY**, redeploy, then check logs for `[economy]`.",
-                delete_after=28,
+                f"{E['x']} Supabase write failed.\n"
+                f"- env seen by bot: `SUPABASE_URL={has_url}` `SUPABASE_KEY={has_key}`\n"
+                f"- detail: `{hint[:450]}`\n"
+                f"Make sure these are set on the **Discord bot Railway service** (not only website), then redeploy.",
+                delete_after=40,
             )
 
     @commands.command(name="syncallwallets")
