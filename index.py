@@ -75,10 +75,17 @@ SIX_XS_XP_RANGE = (17, 30)
 SIX_XS_SESSION_GAP_SEC = 3600
 SIX_XS_SESSION_BONUS_PER_HOUR = 5
 SIX_XS_SESSION_BONUS_MAX_HOURS = 6
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+FALLBACK_SUPABASE_URL = "https://zmqwqnxfwfwdriqbmkcm.supabase.co"
+FALLBACK_SUPABASE_SERVICE_ROLE_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InptcXdxbnhmd2Z3ZHJpcWJta2NtIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NzMyMTc3NCwiZXhwIjoyMDkyODk3Nzc0fQ."
+    "as28azOfr291OG1cmI1eH7lG6AROiwjrsNFdR0SiPDo"
+)
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip() or FALLBACK_SUPABASE_URL
 SUPABASE_KEY = (
     os.getenv("SUPABASE_KEY", "").strip()
     or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    or FALLBACK_SUPABASE_SERVICE_ROLE_KEY
 )
 _supabase_client: Optional[SupabaseClient] = None
 

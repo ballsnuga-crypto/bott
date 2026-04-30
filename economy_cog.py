@@ -28,10 +28,17 @@ except ImportError:
 
 # Always same file next to this module (not cwd) — survives restarts
 ECONOMY_FILE = (Path(__file__).resolve().parent / "economy_data.json").resolve()
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+FALLBACK_SUPABASE_URL = "https://zmqwqnxfwfwdriqbmkcm.supabase.co"
+FALLBACK_SUPABASE_SERVICE_ROLE_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InptcXdxbnhmd2Z3ZHJpcWJta2NtIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NzMyMTc3NCwiZXhwIjoyMDkyODk3Nzc0fQ."
+    "as28azOfr291OG1cmI1eH7lG6AROiwjrsNFdR0SiPDo"
+)
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip() or FALLBACK_SUPABASE_URL
 SUPABASE_KEY = (
     os.getenv("SUPABASE_KEY", "").strip()
     or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    or FALLBACK_SUPABASE_SERVICE_ROLE_KEY
 )
 SHOP_BANNER_PATH = Path(__file__).resolve().parent / "assets" / "6xs_shop_banner.png"
 SHOP_BANNER_FILENAME = "6xs_shop_banner.png"
@@ -699,11 +706,12 @@ class EconomyCog(commands.Cog):
             )
             # endregion
             return None
-        url = os.getenv("SUPABASE_URL", "").strip() or SUPABASE_URL
+        url = os.getenv("SUPABASE_URL", "").strip() or SUPABASE_URL or FALLBACK_SUPABASE_URL
         key = (
             os.getenv("SUPABASE_KEY", "").strip()
             or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
             or SUPABASE_KEY
+            or FALLBACK_SUPABASE_SERVICE_ROLE_KEY
         )
         if not url or not key:
             self._last_supabase_error = "missing SUPABASE_URL or SUPABASE_KEY/SUPABASE_SERVICE_ROLE_KEY"
