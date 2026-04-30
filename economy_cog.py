@@ -1303,6 +1303,76 @@ class EconomyCog(commands.Cog):
             delete_after=20,
         )
 
+    @commands.command(name="supadiag")
+    async def supabase_diag(self, ctx: commands.Context):
+        """Runtime Supabase diagnostics from the live bot process (Railway)."""
+        # region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H6",
+            "economy_cog.py:supabase_diag:start",
+            "Started runtime Supabase diagnostics",
+            {"guild_id": ctx.guild.id if ctx.guild else None, "user_id": ctx.author.id},
+        )
+        # endregion
+        env_url = os.getenv("SUPABASE_URL", "").strip()
+        env_key = os.getenv("SUPABASE_KEY", "").strip()
+        env_service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        visible = sorted([k for k in os.environ.keys() if "SUPABASE" in k.upper()])[:20]
+
+        lines = [
+            f"env url: `{bool(env_url)}`",
+            f"env key: `{bool(env_key)}`",
+            f"env service key: `{bool(env_service_key)}`",
+            f"visible keys: `{', '.join(visible) if visible else '(none)'}`",
+        ]
+
+        sb = self._resolve_supabase_client()
+        lines.append(f"client resolved: `{bool(sb)}`")
+        if not sb:
+            lines.append(f"last error: `{(self._last_supabase_error or 'none')[:350]}`")
+            await ctx.send("\n".join(lines), delete_after=55)
+            return
+
+        try:
+            cnt = sb.table("economy_wallets").select("guild_id", count="exact").limit(1).execute()
+            c = getattr(cnt, "count", None)
+            lines.append(f"table count query ok: `true` rows: `{c}`")
+        except Exception as e:
+            lines.append(f"table count query ok: `false` error: `{str(e)[:260]}`")
+            await ctx.send("\n".join(lines), delete_after=55)
+            return
+
+        k = _key(ctx.guild.id, ctx.author.id)
+        self._get(ctx.guild.id, ctx.author.id)
+        ok = self._upsert_wallet_keys_to_supabase([k])
+        lines.append(f"upsert caller row ok: `{ok}` key: `{k}`")
+        if not ok:
+            lines.append(f"upsert error: `{(self._last_supabase_error or 'none')[:260]}`")
+            await ctx.send("\n".join(lines), delete_after=55)
+            return
+
+        try:
+            q = (
+                sb.table("economy_wallets")
+                .select("guild_id,user_id,wallet")
+                .eq("guild_id", str(ctx.guild.id))
+                .eq("user_id", str(ctx.author.id))
+                .limit(1)
+                .execute()
+            )
+            got = bool(getattr(q, "data", None))
+            lines.append(f"read-back row found: `{got}`")
+            if got:
+                first = q.data[0]
+                lines.append(
+                    f"read-back wallet: `{int(first.get('wallet', 0))}` guild: `{first.get('guild_id')}` user: `{first.get('user_id')}`"
+                )
+        except Exception as e:
+            lines.append(f"read-back query error: `{str(e)[:260]}`")
+
+        await ctx.send("\n".join(lines), delete_after=55)
+
     @commands.command(name="moneyset")
     @commands.has_permissions(administrator=True)
     async def moneyset(self, ctx: commands.Context, user_id: int, amount: int):
