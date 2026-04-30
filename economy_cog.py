@@ -631,7 +631,7 @@ class EconomyCog(commands.Cog):
         self._lock = asyncio.Lock()
         self._data: dict[str, dict[str, Any]] = {}
         self._last_mtime_ns: int = 0
-        self._supabase: Optional[SupabaseClient] = self._init_supabase_client()
+        self._supabase: Optional[SupabaseClient] = None
         self._dirty: bool = False
         self._crash_users: set[int] = set()
         self._bj_users: set[int] = set()
@@ -648,17 +648,74 @@ class EconomyCog(commands.Cog):
         self._load()
         self._load_poly_bets()
 
-    def _init_supabase_client(self) -> Optional[SupabaseClient]:
-        if not SUPABASE_URL or not SUPABASE_KEY or create_supabase_client is None:
+    def _resolve_supabase_client(self) -> Optional[SupabaseClient]:
+        """Create client lazily from current os.environ (fixes late env on some hosts)."""
+        if self._supabase is not None:
+            return self._supabase
+        if create_supabase_client is None:
+            return None
+        url = os.getenv("SUPABASE_URL", "").strip() or SUPABASE_URL
+        key = (
+            os.getenv("SUPABASE_KEY", "").strip()
+            or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+            or SUPABASE_KEY
+        )
+        if not url or not key:
             return None
         try:
-            return create_supabase_client(SUPABASE_URL, SUPABASE_KEY)
+            self._supabase = create_supabase_client(url, key)
+            print("[economy] Supabase client connected (wallets + website sync).")
+            return self._supabase
         except Exception as e:
-            print(f"[economy] supabase init failed: {e}")
+            print(f"[economy] Supabase connection failed: {e}")
             return None
 
+    def _wallet_row_payload_from_key(self, key: str) -> Optional[dict[str, Any]]:
+        row = self._data.get(key)
+        if not row or not isinstance(row, dict):
+            return None
+        try:
+            gid_s, uid_s = key.split(":", 1)
+            gid = int(gid_s)
+            uid = int(uid_s)
+        except (ValueError, TypeError):
+            return None
+        return {
+            "guild_id": gid,
+            "user_id": uid,
+            "wallet": int(row.get("wallet", START_WALLET)),
+            "bank": int(row.get("bank", 0)),
+            "last_daily": float(row.get("last_daily", 0.0)),
+            "last_work": float(row.get("last_work", 0.0)),
+            "last_beg": float(row.get("last_beg", 0.0)),
+            "last_crime": float(row.get("last_crime", 0.0)),
+            "last_rob": float(row.get("last_rob", 0.0)),
+            "last_open": float(row.get("last_open", 0.0)),
+            "cs2_inv": _cs2_normalize_inv(row.get("cs2_inv")),
+            "cs2_pity": max(0, int(row.get("cs2_pity", 0) or 0)),
+        }
+
+    def _upsert_wallet_keys_to_supabase(self, keys: list[str]) -> None:
+        sb = self._resolve_supabase_client()
+        if sb is None or not keys:
+            return
+        payload: list[dict[str, Any]] = []
+        for key in keys:
+            p = self._wallet_row_payload_from_key(key)
+            if p:
+                payload.append(p)
+        if not payload:
+            return
+        try:
+            sb.table("economy_wallets").upsert(payload, on_conflict="guild_id,user_id").execute()
+            print(f"[economy] supabase upsert {len(payload)} wallet row(s)")
+        except Exception:
+            print(f"[economy] supabase upsert failed ({len(payload)} row(s)):")
+            traceback.print_exc()
+
     def _load_from_supabase(self) -> bool:
-        if self._supabase is None:
+        sb = self._resolve_supabase_client()
+        if sb is None:
             return False
         try:
             rows: list[dict[str, Any]] = []
@@ -666,7 +723,7 @@ class EconomyCog(commands.Cog):
             page_size = 1000
             while True:
                 resp = (
-                    self._supabase.table("economy_wallets")
+                    sb.table("economy_wallets")
                     .select("guild_id,user_id,wallet,bank,last_daily,last_work,last_beg,last_crime,last_rob,last_open,cs2_inv,cs2_pity")
                     .range(page * page_size, page * page_size + page_size - 1)
                     .execute()
@@ -801,7 +858,7 @@ class EconomyCog(commands.Cog):
     async def cog_load(self) -> None:
         # Seed Supabase immediately on startup so web casino can read balances
         # even before anyone runs a new economy command.
-        if self._supabase is not None:
+        if self._resolve_supabase_client() is not None:
             try:
                 if not self._data:
                     self._load()
@@ -1006,7 +1063,8 @@ class EconomyCog(commands.Cog):
                 self._last_mtime_ns = path.stat().st_mtime_ns
             except OSError:
                 pass
-            if self._supabase is not None:
+            sb = self._resolve_supabase_client()
+            if sb is not None:
                 payload: list[dict[str, Any]] = []
                 for key, row in self._data.items():
                     try:
@@ -1033,7 +1091,8 @@ class EconomyCog(commands.Cog):
                     )
                 if payload:
                     try:
-                        self._supabase.table("economy_wallets").upsert(payload, on_conflict="guild_id,user_id").execute()
+                        sb.table("economy_wallets").upsert(payload, on_conflict="guild_id,user_id").execute()
+                        print(f"[economy] supabase full save ok ({len(payload)} row(s))")
                     except Exception:
                         print(f"[economy] supabase save failed ({len(payload)} rows):")
                         traceback.print_exc()
@@ -1079,7 +1138,13 @@ class EconomyCog(commands.Cog):
                 pass
             return False
         self._get(ctx.guild.id, ctx.author.id)
-        await self._flush_dirty()
+        if self._dirty:
+            await self._flush_dirty()
+        else:
+            # Existing users: nothing was dirty so full _save never ran; still push this row
+            # so Supabase stays in sync with the local JSON (fixes website balance at 0).
+            k = _key(ctx.guild.id, ctx.author.id)
+            self._upsert_wallet_keys_to_supabase([k])
         return True
 
     async def cog_unload(self) -> None:
