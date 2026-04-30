@@ -4949,4 +4949,7 @@ def _maybe_seed_economy_to_supabase_at_startup() -> None:
 
 
 _maybe_seed_economy_to_supabase_at_startup()
-bot.run("MTQ4NzIzMjYzMjExMzcyOTYwNg.GuOem7.8BF1WGLr90MHyplHQrD6l3znT9J7o3clXKQ5dE")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+if not DISCORD_TOKEN:
+    raise RuntimeError("Missing DISCORD_TOKEN in environment.")
+bot.run(DISCORD_TOKEN)
