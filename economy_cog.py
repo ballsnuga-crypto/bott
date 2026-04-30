@@ -8,6 +8,7 @@ import json
 import os
 import random
 import traceback
+import time
 import re
 import secrets
 import time
@@ -277,6 +278,23 @@ CS2_KEEP_SELL_TIMEOUT = 120
 CS2_TRADE_OFFER_TTL = 300
 
 START_WALLET = 500
+
+
+def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        payload = {
+            "sessionId": "7886ef",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open("debug-7886ef.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    except Exception:
+        pass
 COOLDOWN_DAILY = 86400
 COOLDOWN_WORK = 2700
 COOLDOWN_BEG = 300
@@ -651,9 +669,35 @@ class EconomyCog(commands.Cog):
 
     def _resolve_supabase_client(self) -> Optional[SupabaseClient]:
         """Create client lazily from current os.environ (fixes late env on some hosts)."""
+        # region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H1",
+            "economy_cog.py:_resolve_supabase_client:entry",
+            "Supabase env visibility check",
+            {
+                "pid": os.getpid(),
+                "cwd": os.getcwd(),
+                "has_url_env": bool(os.getenv("SUPABASE_URL", "").strip()),
+                "has_key_env": bool(os.getenv("SUPABASE_KEY", "").strip()),
+                "has_service_key_env": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()),
+                "has_module_url": bool(SUPABASE_URL),
+                "has_module_key": bool(SUPABASE_KEY),
+            },
+        )
+        # endregion
         if self._supabase is not None:
             return self._supabase
         if create_supabase_client is None:
+            # region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "H2",
+                "economy_cog.py:_resolve_supabase_client:no_supabase_pkg",
+                "supabase package import unavailable",
+                {},
+            )
+            # endregion
             return None
         url = os.getenv("SUPABASE_URL", "").strip() or SUPABASE_URL
         key = (
@@ -663,15 +707,45 @@ class EconomyCog(commands.Cog):
         )
         if not url or not key:
             self._last_supabase_error = "missing SUPABASE_URL or SUPABASE_KEY/SUPABASE_SERVICE_ROLE_KEY"
+            # region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "H3",
+                "economy_cog.py:_resolve_supabase_client:missing_env",
+                "resolved url/key are empty after fallback chain",
+                {
+                    "resolved_url": bool(url),
+                    "resolved_key": bool(key),
+                },
+            )
+            # endregion
             return None
         try:
             self._supabase = create_supabase_client(url, key)
             self._last_supabase_error = ""
             print("[economy] Supabase client connected (wallets + website sync).")
+            # region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "H4",
+                "economy_cog.py:_resolve_supabase_client:connected",
+                "Supabase client created successfully",
+                {"url_prefix": url[:40]},
+            )
+            # endregion
             return self._supabase
         except Exception as e:
             self._last_supabase_error = f"client init failed: {e}"
             print(f"[economy] Supabase connection failed: {e}")
+            # region agent log
+            _agent_debug_log(
+                "pre-fix",
+                "H5",
+                "economy_cog.py:_resolve_supabase_client:exception",
+                "Supabase client init threw exception",
+                {"error": str(e)[:400]},
+            )
+            # endregion
             return None
 
     def _wallet_row_payload_from_key(self, key: str) -> Optional[dict[str, Any]]:
@@ -1206,10 +1280,14 @@ class EconomyCog(commands.Cog):
                 or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
                 or SUPABASE_KEY
             )
+            env_hint_keys = sorted(
+                [k for k in os.environ.keys() if "SUPABASE" in k.upper()]
+            )[:12]
             hint = self._last_supabase_error or "no detailed error captured; check Railway logs."
             await ctx.send(
                 f"{E['x']} Supabase write failed.\n"
                 f"- env seen by bot: `SUPABASE_URL={has_url}` `SUPABASE_KEY={has_key}`\n"
+                f"- SUPABASE-like env keys visible: `{', '.join(env_hint_keys) if env_hint_keys else '(none)'}`\n"
                 f"- detail: `{hint[:450]}`\n"
                 f"Make sure these are set on the **Discord bot Railway service** (not only website), then redeploy.",
                 delete_after=40,
