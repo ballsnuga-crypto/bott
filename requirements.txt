@@ -1,0 +1,8 @@
+discord.py
+aiohttp
+pinterest-dl
+python-dotenv
+yt-dlp
+Pillow>=10.0.0
+pycountry>=23.0.0
+supabase

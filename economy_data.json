@@ -1,0 +1,454 @@
+{
+"1482159249084649556:1326518688727437342": {
+"wallet": 3886539,
+"bank": 0,
+"last_daily": 1776279539.9734058,
+"last_work": 1776279535.724055,
+"last_beg": 1775645789.8928628,
+"last_crime": 1776064418.5108635,
+"last_rob": 1776287670.0537932,
+"last_open": 1775820384.9860735,
+"cs2_inv": [
+{
+"i": "dxS7Si997ng8aQ",
+"d": "r_hyper"
+},
+{
+"i": "Te3C_JqvbApAGQ",
+"d": "cl_neon"
+}
+],
+"cs2_pity": 2
+},
+"1482159249084649556:1248595511523545151": {
+"wallet": 100000,
+"bank": 0,
+"last_daily": 1774947278.596722,
+"last_work": 1774970404.6809478,
+"last_beg": 1774970631.7310324,
+"last_crime": 1774970407.364513,
+"last_rob": 1774957060.6688766,
+"last_open": 1774970399.6989639,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1488761094532108483": {
+"wallet": 200000,
+"bank": 0,
+"last_daily": 1775037340.790339,
+"last_work": 1775043705.0075984,
+"last_beg": 1775043709.7646692,
+"last_crime": 1775043707.4243224,
+"last_rob": 0.0,
+"last_open": 1775037343.2960982,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1489878022529093672": {
+"wallet": 20455343,
+"bank": 0,
+"last_daily": 1776198787.4384973,
+"last_work": 1776198781.8791623,
+"last_beg": 1776198784.9654863,
+"last_crime": 1776198778.6877844,
+"last_rob": 1776431895.6971693,
+"last_open": 1776198789.8701272,
+"cs2_inv": [
+{
+"i": "lSeIpFtZfX8Nrg",
+"d": "i_cortex"
+}
+],
+"cs2_pity": 0
+},
+"1482159249084649556:768738762359308319": {
+"wallet": 0,
+"bank": 0,
+"last_daily": 1777201737.7927306,
+"last_work": 1777201734.5353396,
+"last_beg": 1776090409.3830638,
+"last_crime": 1776431460.151755,
+"last_rob": 1776431498.1113503,
+"last_open": 1777201742.062853,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1480932864186126428": {
+"wallet": 195,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 1775413624.0606437,
+"last_crime": 1775413627.2728715,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:752082958545977352": {
+"wallet": 38547,
+"bank": 0,
+"last_daily": 1776287593.924032,
+"last_work": 1776287818.9970143,
+"last_beg": 1776287822.7968435,
+"last_crime": 1776287750.7391362,
+"last_rob": 1776287634.7530406,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1483934414382698558": {
+"wallet": 0,
+"bank": 0,
+"last_daily": 1776350666.533671,
+"last_work": 1776377614.0528164,
+"last_beg": 1776377621.85617,
+"last_crime": 1776377601.4630659,
+"last_rob": 1776279738.447259,
+"last_open": 1776377663.8284826,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1488216873479835748": {
+"wallet": 1835,
+"bank": 0,
+"last_daily": 1776964400.234102,
+"last_work": 0.0,
+"last_beg": 1776964338.7771459,
+"last_crime": 1776964402.4903452,
+"last_rob": 1776369345.6310344,
+"last_open": 1776369388.4473627,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1386128715041345569": {
+"wallet": 420,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1405615568706605226": {
+"wallet": 38,
+"bank": 0,
+"last_daily": 1776627286.740093,
+"last_work": 1776377616.1938221,
+"last_beg": 1776666757.2902467,
+"last_crime": 1776666737.9215212,
+"last_rob": 0.0,
+"last_open": 1776627337.960625,
+"cs2_inv": [
+{
+"i": "HGm-mInynFLvpg",
+"d": "m_ghost"
+}
+],
+"cs2_pity": 1
+},
+"1482159249084649556:1359188049656938606": {
+"wallet": 100500,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:871020653732560906": {
+"wallet": 1922,
+"bank": 0,
+"last_daily": 1776796663.1790092,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1475809998272593981": {
+"wallet": 116696,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1490884401008214068": {
+"wallet": 4105,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 1776683126.891648,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:678284528988454940": {
+"wallet": 39,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 1776602146.157789,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1488664327278952559": {
+"wallet": 0,
+"bank": 0,
+"last_daily": 1776602168.5816422,
+"last_work": 1776602150.434976,
+"last_beg": 1776602148.5990417,
+"last_crime": 1776602140.1126378,
+"last_rob": 0.0,
+"last_open": 1776602164.7676108,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1484585831598395403": {
+"wallet": 0,
+"bank": 0,
+"last_daily": 1776629306.681994,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1383316041609908306": {
+"wallet": 613,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 1776632377.3740687,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1005305734046683208": {
+"wallet": 500,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1461445369941459068": {
+"wallet": 0,
+"bank": 528,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 1776667190.7484276,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1487256032815223005": {
+"wallet": 450,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1166742690390614048": {
+"wallet": 16617955,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1187928723320737853": {
+"wallet": 26419196,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 1776981343.8639832,
+"cs2_inv": [
+{
+"i": "a5Yz5ga9rPiRZg",
+"d": "r_print"
+},
+{
+"i": "gvP2__4urGm86w",
+"d": "cl_empress"
+},
+{
+"i": "s5yqti37iOcG6g",
+"d": "cl_kumicho"
+},
+{
+"i": "dnjaJc8Gp4JPqw",
+"d": "cl_neon"
+},
+{
+"i": "Bg7b5QYfslNDQQ",
+"d": "cv_fade"
+},
+{
+"i": "vuYfJ_Hec_fnjA",
+"d": "cl_empress"
+}
+],
+"cs2_pity": 0
+},
+"1482159249084649556:543214230090809346": {
+"wallet": 490,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:280079638359834625": {
+"wallet": 0,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1482159249084649556:1369334189987598337": {
+"wallet": 2393,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1498102377037692961:1369334189987598337": {
+"wallet": 500,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1498102377037692961:1326518688727437342": {
+"wallet": 302,
+"bank": 0,
+"last_daily": 1777347617.7856545,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 1777347612.3508468,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1498102377037692961:1489878022529093672": {
+"wallet": 0,
+"bank": 0,
+"last_daily": 1777461000.5360405,
+"last_work": 1777496306.1587074,
+"last_beg": 1777496293.5888894,
+"last_crime": 1777496271.6326544,
+"last_rob": 1777460990.8082273,
+"last_open": 1777496290.6360393,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1498102377037692961:1475809998272593981": {
+"wallet": 10892,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1498102377037692961:1166742690390614048": {
+"wallet": 1430,
+"bank": 0,
+"last_daily": 1777479835.6886983,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 1777479828.6646538,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1498102377037692961:280079638359834625": {
+"wallet": 775,
+"bank": 0,
+"last_daily": 1777496012.3550599,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 1777495970.7587142,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+},
+"1498102377037692961:1497352847921254542": {
+"wallet": 22,
+"bank": 0,
+"last_daily": 0.0,
+"last_work": 0.0,
+"last_beg": 0.0,
+"last_crime": 0.0,
+"last_rob": 0.0,
+"last_open": 0.0,
+"cs2_inv": [],
+"cs2_pity": 0
+}
+}
