@@ -290,6 +290,8 @@ _AGENT_INSTANCE_TAG = (
     or os.getenv("RAILWAY_DEPLOYMENT_ID", "").strip()
     or f"pid:{os.getpid()}"
 )
+SUPABASE_PULL_INTERVAL_SEC = 3.0
+SUPABASE_KEY_PULL_INTERVAL_SEC = 1.5
 
 
 def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
@@ -661,6 +663,8 @@ class EconomyCog(commands.Cog):
         self._lock = asyncio.Lock()
         self._data: dict[str, dict[str, Any]] = {}
         self._last_mtime_ns: int = 0
+        self._last_supabase_pull_ts: float = 0.0
+        self._last_supabase_key_pull_ts: dict[str, float] = {}
         self._supabase: Optional[SupabaseClient] = None
         self._last_supabase_error: str = ""
         self._dirty: bool = False
@@ -915,13 +919,63 @@ class EconomyCog(commands.Cog):
     def _reload_if_changed(self) -> None:
         path = ECONOMY_FILE
         try:
-            if not path.exists():
-                return
-            mtime = path.stat().st_mtime_ns
-            if mtime > self._last_mtime_ns:
-                self._load()
+            if path.exists():
+                mtime = path.stat().st_mtime_ns
+                if mtime > self._last_mtime_ns:
+                    self._load()
         except OSError:
+            pass
+
+        # Website/casino writes happen in Supabase, not local file. Pull periodically so
+        # Discord-side commands (e.g. 6bal) reflect site earnings automatically.
+        if self._dirty:
             return
+        now = time.monotonic()
+        if (now - self._last_supabase_pull_ts) < SUPABASE_PULL_INTERVAL_SEC:
+            return
+        self._last_supabase_pull_ts = now
+        if self._load_from_supabase():
+            print("[economy] periodic supabase pull applied")
+
+    def _pull_key_from_supabase(self, guild_id: int, user_id: int) -> None:
+        """Read-through one wallet row from Supabase so website changes show in Discord fast."""
+        sb = self._resolve_supabase_client()
+        if sb is None:
+            return
+        k = _key(guild_id, user_id)
+        now = time.monotonic()
+        if (now - self._last_supabase_key_pull_ts.get(k, 0.0)) < SUPABASE_KEY_PULL_INTERVAL_SEC:
+            return
+        self._last_supabase_key_pull_ts[k] = now
+        try:
+            resp = (
+                sb.table("economy_wallets")
+                .select(
+                    "wallet,bank,last_daily,last_work,last_beg,last_crime,last_rob,last_open,cs2_inv,cs2_pity"
+                )
+                .eq("guild_id", str(guild_id))
+                .eq("user_id", str(user_id))
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(resp, "data", None) or []
+            if not rows:
+                return
+            row = rows[0] or {}
+            self._data[k] = {
+                "wallet": int(row.get("wallet", START_WALLET)),
+                "bank": int(row.get("bank", 0)),
+                "last_daily": float(row.get("last_daily", 0.0)),
+                "last_work": float(row.get("last_work", 0.0)),
+                "last_beg": float(row.get("last_beg", 0.0)),
+                "last_crime": float(row.get("last_crime", 0.0)),
+                "last_rob": float(row.get("last_rob", 0.0)),
+                "last_open": float(row.get("last_open", 0.0)),
+                "cs2_inv": _cs2_normalize_inv(row.get("cs2_inv")),
+                "cs2_pity": max(0, int(row.get("cs2_pity", 0) or 0)),
+            }
+        except Exception:
+            pass
 
     def _load_poly_bets(self) -> None:
         try:
@@ -1206,6 +1260,7 @@ class EconomyCog(commands.Cog):
 
     def _get(self, guild_id: int, user_id: int) -> dict[str, Any]:
         self._reload_if_changed()
+        self._pull_key_from_supabase(guild_id, user_id)
         k = _key(guild_id, user_id)
         if k not in self._data:
             self._data[k] = {
