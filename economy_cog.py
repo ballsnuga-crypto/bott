@@ -28,7 +28,10 @@ except ImportError:
 # Always same file next to this module (not cwd) — survives restarts
 ECONOMY_FILE = (Path(__file__).resolve().parent / "economy_data.json").resolve()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+SUPABASE_KEY = (
+    os.getenv("SUPABASE_KEY", "").strip()
+    or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+)
 SHOP_BANNER_PATH = Path(__file__).resolve().parent / "assets" / "6xs_shop_banner.png"
 SHOP_BANNER_FILENAME = "6xs_shop_banner.png"
 POLY_BETS_FILE = (Path(__file__).resolve().parent / "polymarket_bets.json").resolve()

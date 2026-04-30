@@ -76,7 +76,10 @@ SIX_XS_SESSION_GAP_SEC = 3600
 SIX_XS_SESSION_BONUS_PER_HOUR = 5
 SIX_XS_SESSION_BONUS_MAX_HOURS = 6
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+SUPABASE_KEY = (
+    os.getenv("SUPABASE_KEY", "").strip()
+    or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+)
 _supabase_client: Optional[SupabaseClient] = None
 
 # Core milestone roles (3–30). Add more entries in `six_xs_role_ids_extra.json`
@@ -435,7 +438,10 @@ def _get_supabase_client() -> Optional[SupabaseClient]:
     if _supabase_client is not None:
         return _supabase_client
     if not SUPABASE_URL or not SUPABASE_KEY:
-        print("[6XS] SUPABASE_URL/SUPABASE_KEY not set; XP persistence is disabled.")
+        print(
+            "[6XS] Missing Supabase env. Set SUPABASE_URL and "
+            "SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY). XP persistence is disabled."
+        )
         return None
     if create_supabase_client is None:
         print("[6XS] supabase-py is not installed; run `pip install supabase`.")
