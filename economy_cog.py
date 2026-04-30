@@ -948,10 +948,12 @@ class EconomyCog(commands.Cog):
             return
         self._last_supabase_key_pull_ts[k] = now
         try:
+            row: Optional[dict[str, Any]] = None
+            # Primary: strict guild+user match.
             resp = (
                 sb.table("economy_wallets")
                 .select(
-                    "wallet,bank,last_daily,last_work,last_beg,last_crime,last_rob,last_open,cs2_inv,cs2_pity"
+                    "wallet,bank,last_daily,last_work,last_beg,last_crime,last_rob,last_open,cs2_inv,cs2_pity,updated_at"
                 )
                 .eq("guild_id", str(guild_id))
                 .eq("user_id", str(user_id))
@@ -959,9 +961,25 @@ class EconomyCog(commands.Cog):
                 .execute()
             )
             rows = getattr(resp, "data", None) or []
-            if not rows:
+            if rows:
+                row = rows[0] or {}
+            # Fallback: latest row for this user across guilds (for legacy/misaligned rows).
+            if not row:
+                fb = (
+                    sb.table("economy_wallets")
+                    .select(
+                        "wallet,bank,last_daily,last_work,last_beg,last_crime,last_rob,last_open,cs2_inv,cs2_pity,updated_at"
+                    )
+                    .eq("user_id", str(user_id))
+                    .order("updated_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                fb_rows = getattr(fb, "data", None) or []
+                if fb_rows:
+                    row = fb_rows[0] or {}
+            if not row:
                 return
-            row = rows[0] or {}
             self._data[k] = {
                 "wallet": int(row.get("wallet", START_WALLET)),
                 "bank": int(row.get("bank", 0)),
