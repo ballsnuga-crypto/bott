@@ -695,23 +695,32 @@ class EconomyCog(commands.Cog):
             "cs2_pity": max(0, int(row.get("cs2_pity", 0) or 0)),
         }
 
-    def _upsert_wallet_keys_to_supabase(self, keys: list[str]) -> None:
+    def _upsert_wallet_keys_to_supabase(self, keys: list[str]) -> bool:
         sb = self._resolve_supabase_client()
-        if sb is None or not keys:
-            return
+        if sb is None:
+            if keys:
+                print(
+                    "[economy] supabase upsert skipped: no client "
+                    "(set SUPABASE_URL + SUPABASE_KEY or SUPABASE_SERVICE_ROLE_KEY on this host)"
+                )
+            return False
+        if not keys:
+            return False
         payload: list[dict[str, Any]] = []
         for key in keys:
             p = self._wallet_row_payload_from_key(key)
             if p:
                 payload.append(p)
         if not payload:
-            return
+            return False
         try:
             sb.table("economy_wallets").upsert(payload, on_conflict="guild_id,user_id").execute()
             print(f"[economy] supabase upsert {len(payload)} wallet row(s)")
+            return True
         except Exception:
             print(f"[economy] supabase upsert failed ({len(payload)} row(s)):")
             traceback.print_exc()
+            return False
 
     def _load_from_supabase(self) -> bool:
         sb = self._resolve_supabase_client()
@@ -1144,7 +1153,8 @@ class EconomyCog(commands.Cog):
             # Existing users: nothing was dirty so full _save never ran; still push this row
             # so Supabase stays in sync with the local JSON (fixes website balance at 0).
             k = _key(ctx.guild.id, ctx.author.id)
-            self._upsert_wallet_keys_to_supabase([k])
+            if not self._upsert_wallet_keys_to_supabase([k]):
+                print(f"[economy] warning: single-row supabase sync failed for {k}")
         return True
 
     async def cog_unload(self) -> None:
@@ -1171,6 +1181,33 @@ class EconomyCog(commands.Cog):
         em.add_field(name=f"{E['chart']} net", value=f"**{_fmt(w + b)}**", inline=True)
         await ctx.send(embed=em)
         await self._flush_dirty()
+
+    @commands.command(name="pushwallet")
+    async def push_wallet(self, ctx: commands.Context):
+        """Force-sync **your** wallet row to Supabase (fixes website / casino balance)."""
+        self._get(ctx.guild.id, ctx.author.id)
+        k = _key(ctx.guild.id, ctx.author.id)
+        if self._upsert_wallet_keys_to_supabase([k]):
+            await ctx.send(
+                f"{E['check']} pushed wallet to Supabase (`{k}`). Refresh the site in a few seconds.",
+                delete_after=22,
+            )
+        else:
+            await ctx.send(
+                f"{E['x']} Supabase write failed. On Railway set **SUPABASE_URL** + "
+                f"**SUPABASE_SERVICE_ROLE_KEY**, redeploy, then check logs for `[economy]`.",
+                delete_after=28,
+            )
+
+    @commands.command(name="syncallwallets")
+    @commands.is_owner()
+    async def sync_all_wallets(self, ctx: commands.Context):
+        """Bot owner: full JSON save + upsert **all** in-memory wallets to Supabase."""
+        await self._save()
+        await ctx.send(
+            f"{E['check']} full save done (**{len(self._data)}** keys). Check Supabase row count.",
+            delete_after=20,
+        )
 
     @commands.command(name="moneyset")
     @commands.has_permissions(administrator=True)
