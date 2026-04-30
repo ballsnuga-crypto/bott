@@ -285,6 +285,11 @@ CS2_KEEP_SELL_TIMEOUT = 120
 CS2_TRADE_OFFER_TTL = 300
 
 START_WALLET = 500
+_AGENT_INSTANCE_TAG = (
+    os.getenv("RAILWAY_REPLICA_ID", "").strip()
+    or os.getenv("RAILWAY_DEPLOYMENT_ID", "").strip()
+    or f"pid:{os.getpid()}"
+)
 
 
 def _agent_debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
@@ -1257,6 +1262,20 @@ class EconomyCog(commands.Cog):
     @commands.command(name="balance", aliases=["bal", "money"])
     async def balance(self, ctx: commands.Context, member: Optional[discord.Member] = None):
         """💵 Wallet + bank."""
+        # region agent log
+        _agent_debug_log(
+            "pre-fix",
+            "H7",
+            "economy_cog.py:balance:entry",
+            "6bal command execution",
+            {
+                "instance": _AGENT_INSTANCE_TAG,
+                "guild_id": ctx.guild.id if ctx.guild else None,
+                "author_id": ctx.author.id,
+                "member_id": (member.id if member else None),
+            },
+        )
+        # endregion
         m = member or ctx.author
         d = self._get(ctx.guild.id, m.id)
         w, b = int(d["wallet"]), int(d["bank"])
@@ -1267,6 +1286,7 @@ class EconomyCog(commands.Cog):
         em.add_field(name=f"{E['cash']} wallet", value=f"**{_fmt(w)}** coins", inline=True)
         em.add_field(name=f"{E['bank']} bank", value=f"**{_fmt(b)}** coins", inline=True)
         em.add_field(name=f"{E['chart']} net", value=f"**{_fmt(w + b)}**", inline=True)
+        em.set_footer(text=f"inst:{_AGENT_INSTANCE_TAG} key:{ctx.guild.id}:{m.id}")
         await ctx.send(embed=em)
         await self._flush_dirty()
 
