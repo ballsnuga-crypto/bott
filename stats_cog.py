@@ -312,6 +312,256 @@ def _fetch_archive_hour_streak_blocking(guild_id: int, user_id: int) -> Optional
     return None
 
 
+def _discord_ts_to_unix(raw: Any) -> Optional[float]:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _fetch_user_archive_session_blocking(guild_id: int, user_id: int) -> Optional[dict[str, Any]]:
+    """Rolling 1h-gap session from mirrored archive only (same rules as old Activity)."""
+    main = _sys.modules.get("__main__") or _sys.modules.get("index")
+    get_client = getattr(main, "_get_supabase_client", None)
+    if not callable(get_client):
+        return None
+    client = get_client()
+    if client is None:
+        return None
+    gid = str(guild_id)
+    uid = str(user_id)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    times: list[float] = []
+    offset = 0
+    while offset < 12000:
+        try:
+            resp = (
+                client.table("archive_messages")
+                .select("created_at_discord")
+                .eq("guild_id", gid)
+                .eq("author_id", uid)
+                .gte("created_at_discord", cutoff)
+                .or_("author_is_bot.is.null,author_is_bot.eq.false")
+                .order("created_at_discord", desc=False)
+                .range(offset, offset + 999)
+                .execute()
+            )
+        except Exception:
+            resp = (
+                client.table("archive_messages")
+                .select("created_at_discord")
+                .eq("guild_id", gid)
+                .eq("author_id", uid)
+                .gte("created_at_discord", cutoff)
+                .order("created_at_discord", desc=False)
+                .range(offset, offset + 999)
+                .execute()
+            )
+        chunk = getattr(resp, "data", None) or []
+        for row in chunk:
+            ts = _discord_ts_to_unix(row.get("created_at_discord"))
+            if ts is not None:
+                times.append(ts)
+        if len(chunk) < 1000:
+            break
+        offset += 1000
+    if not times:
+        return {"session_msg_count": 0, "session_start_ts": None, "latest_ts": None, "is_active": False}
+    times.sort()
+    now = time.time()
+    newest = times[-1]
+    if now - newest > SESSION_GAP_SEC:
+        return {"session_msg_count": 0, "session_start_ts": None, "latest_ts": newest, "is_active": False}
+    suffix = [times[-1]]
+    for i in range(len(times) - 2, -1, -1):
+        if times[i + 1] - times[i] <= SESSION_GAP_SEC:
+            suffix.insert(0, times[i])
+        else:
+            break
+    cnt = len(suffix)
+    latest = suffix[-1]
+    oldest = suffix[0]
+    is_active = cnt >= ACTIVE_SESSION_MSG_THRESHOLD and (now - latest) <= SESSION_GAP_SEC
+    return {
+        "session_msg_count": cnt,
+        "session_start_ts": oldest,
+        "latest_ts": latest,
+        "is_active": is_active,
+    }
+
+
+def _rpc_archive_lb_lifetime_rows_blocking(guild_id: int) -> list[tuple[int, int]]:
+    main = _sys.modules.get("__main__") or _sys.modules.get("index")
+    get_client = getattr(main, "_get_supabase_client", None)
+    if not callable(get_client):
+        return []
+    client = get_client()
+    if client is None:
+        return []
+    try:
+        r = client.rpc(
+            "archive_leaderboard_lifetime",
+            {"p_guild_id": str(guild_id), "p_limit": 40},
+        ).execute()
+        rows = getattr(r, "data", None) or []
+        out: list[tuple[int, int]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            aid = int(str(row.get("author_id", "0")))
+            cnt = int(row.get("msg_count") or 0)
+            if cnt > 0:
+                out.append((aid, cnt))
+        return out
+    except Exception as e:
+        print(f"[6statslb] archive_leaderboard_lifetime RPC failed — run supabase_archive_ranks_rpc.sql? {e!r}")
+        return []
+
+
+def _rpc_archive_lb_today_rows_blocking(guild_id: int) -> list[tuple[int, int]]:
+    main = _sys.modules.get("__main__") or _sys.modules.get("index")
+    get_client = getattr(main, "_get_supabase_client", None)
+    if not callable(get_client):
+        return []
+    client = get_client()
+    if client is None:
+        return []
+    tday = datetime.now(timezone.utc).date()
+    ts0 = f"{tday.isoformat()}T00:00:00+00:00"
+    ts1 = f"{(tday + timedelta(days=1)).isoformat()}T00:00:00+00:00"
+    try:
+        r = client.rpc(
+            "archive_leaderboard_today",
+            {
+                "p_guild_id": str(guild_id),
+                "p_today_start": ts0,
+                "p_today_end": ts1,
+                "p_limit": 40,
+            },
+        ).execute()
+        rows = getattr(r, "data", None) or []
+        out: list[tuple[int, int]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            aid = int(str(row.get("author_id", "0")))
+            cnt = int(row.get("msg_count") or 0)
+            if cnt > 0:
+                out.append((aid, cnt))
+        return out
+    except Exception as e:
+        print(f"[6statslb] archive_leaderboard_today RPC failed — run supabase_archive_ranks_rpc.sql? {e!r}")
+        return []
+
+
+def _archive_lb_activity_rows_blocking(guild_id: int) -> list[tuple[int, int]]:
+    """Active session seconds (mirrored archive), same session rules as 6stats Activity."""
+    main = _sys.modules.get("__main__") or _sys.modules.get("index")
+    get_client = getattr(main, "_get_supabase_client", None)
+    if not callable(get_client):
+        return []
+    client = get_client()
+    if client is None:
+        return []
+    gid = str(guild_id)
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    by_uid: dict[int, list[float]] = {}
+    offset = 0
+    while offset < 50000:
+        try:
+            resp = (
+                client.table("archive_messages")
+                .select("author_id,created_at_discord")
+                .eq("guild_id", gid)
+                .gte("created_at_discord", cutoff)
+                .or_("author_is_bot.is.null,author_is_bot.eq.false")
+                .order("created_at_discord", desc=False)
+                .range(offset, offset + 999)
+                .execute()
+            )
+        except Exception:
+            resp = (
+                client.table("archive_messages")
+                .select("author_id,created_at_discord")
+                .eq("guild_id", gid)
+                .gte("created_at_discord", cutoff)
+                .order("created_at_discord", desc=False)
+                .range(offset, offset + 999)
+                .execute()
+            )
+        chunk = getattr(resp, "data", None) or []
+        for row in chunk:
+            if not isinstance(row, dict):
+                continue
+            if row.get("author_is_bot"):
+                continue
+            try:
+                uid = int(str(row.get("author_id", "0")))
+            except ValueError:
+                continue
+            ts = _discord_ts_to_unix(row.get("created_at_discord"))
+            if ts is None:
+                continue
+            by_uid.setdefault(uid, []).append(ts)
+        if len(chunk) < 1000:
+            break
+        offset += 1000
+
+    now = time.time()
+    scores: list[tuple[int, int]] = []
+    for uid, raw_times in by_uid.items():
+        raw_times.sort()
+        newest = raw_times[-1]
+        if now - newest > SESSION_GAP_SEC:
+            continue
+        suffix = [raw_times[-1]]
+        for i in range(len(raw_times) - 2, -1, -1):
+            if raw_times[i + 1] - raw_times[i] <= SESSION_GAP_SEC:
+                suffix.insert(0, raw_times[i])
+            else:
+                break
+        cnt = len(suffix)
+        latest = suffix[-1]
+        oldest = suffix[0]
+        if cnt < ACTIVE_SESSION_MSG_THRESHOLD or (now - latest) > SESSION_GAP_SEC:
+            continue
+        scores.append((uid, max(0, int(now - oldest))))
+    scores.sort(key=lambda x: (-x[1], x[0]))
+    return scores[:15]
+
+
+def _archive_lb_streak_rows_blocking(guild_id: int) -> list[tuple[int, int]]:
+    """Hour-streak (archive RPC) for top lifetime authors."""
+    life = _rpc_archive_lb_lifetime_rows_blocking(guild_id)
+    pairs: list[tuple[int, int]] = []
+    for uid, _c in life[:40]:
+        hs = _fetch_archive_hour_streak_blocking(guild_id, uid)
+        if hs is not None and hs > 0:
+            pairs.append((uid, int(hs)))
+    pairs.sort(key=lambda x: (-x[1], x[0]))
+    return pairs[:15]
+
+
+def _archive_lb_entries_blocking(guild_id: int, mode: str) -> list[tuple[int, int, str]]:
+    if mode == "daily":
+        return [(u, c, "msg today") for u, c in _rpc_archive_lb_today_rows_blocking(guild_id)]
+    if mode == "lifetime":
+        return [(u, c, "msg total") for u, c in _rpc_archive_lb_lifetime_rows_blocking(guild_id)]
+    if mode == "activity":
+        return [(u, s, "active sec") for u, s in _archive_lb_activity_rows_blocking(guild_id)]
+    return [(u, s, "hour streak") for u, s in _archive_lb_streak_rows_blocking(guild_id)]
+
+
 def _fetch_bio_slug_blocking(user_id: int) -> Optional[str]:
     main = _sys.modules.get("__main__") or _sys.modules.get("index")
     get_client = getattr(main, "_get_supabase_client", None)
@@ -636,23 +886,8 @@ def _rebuild_rank_maps_blocking(guild_id: int, today: str) -> tuple[dict[int, in
         conn.close()
 
 
-def _fetch_leaderboard_rows_blocking(guild_id: int) -> list[sqlite3.Row]:
-    conn = _connect()
-    try:
-        _init_db(conn)
-        cur = conn.execute(
-            "SELECT user_id, lifetime_messages, daily_messages_today, daily_day_key, "
-            "session_start_ts, session_msg_count, streak_days, last_message_ts "
-            "FROM guild_user_stats WHERE guild_id = ?",
-            (guild_id,),
-        )
-        return cur.fetchall()
-    finally:
-        conn.close()
-
-
 class MessageStatsCog(commands.Cog):
-    """Track messages for 6stats; ranks refreshed at most every 5 minutes per guild."""
+    """Track messages for 6stats / 6statslb; archive stats from Supabase; SQLite for timezone + UTC day streak."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -663,63 +898,27 @@ class MessageStatsCog(commands.Cog):
     def _format_rank_value(n: int) -> str:
         return f"{n:,}"
 
-    def _leaderboard_embed(
+    def _leaderboard_embed_from_entries(
         self,
         guild: discord.Guild,
         mode: str,
-        rows: list[sqlite3.Row],
+        entries: list[tuple[int, int, str]],
         viewer_id: int,
     ) -> discord.Embed:
-        today = _utc_today_str()
-        now = time.time()
-
-        # (uid, score_int, display_suffix)
-        entries: list[tuple[int, int, str]] = []
-
         if mode == "daily":
-            for r in rows:
-                if r["daily_day_key"] != today:
-                    continue
-                score = int(r["daily_messages_today"] or 0)
-                if score <= 0:
-                    continue
-                entries.append((int(r["user_id"]), score, "msg today"))
-            title = "6stats Leaderboard - Daily"
+            title = "6stats Leaderboard — Today (6xs archive)"
             color = discord.Color.blurple()
         elif mode == "lifetime":
-            for r in rows:
-                score = int(r["lifetime_messages"] or 0)
-                if score <= 0:
-                    continue
-                entries.append((int(r["user_id"]), score, "msg total"))
-            title = "6stats Leaderboard - Lifetime"
+            title = "6stats Leaderboard — Lifetime (6xs archive)"
             color = discord.Color.dark_teal()
         elif mode == "activity":
-            # Active = >= threshold messages in current session and <= 1h since last message.
-            for r in rows:
-                sess_count = int(r["session_msg_count"] or 0)
-                last_ts = r["last_message_ts"]
-                sess_start = r["session_start_ts"]
-                if sess_count < ACTIVE_SESSION_MSG_THRESHOLD or last_ts is None or sess_start is None:
-                    continue
-                if now - float(last_ts) > SESSION_GAP_SEC:
-                    continue
-                sec = max(0, int(now - float(sess_start)))
-                if sec <= 0:
-                    continue
-                entries.append((int(r["user_id"]), sec, "active sec"))
-            title = "6stats Leaderboard - Activity"
+            title = "6stats Leaderboard — Activity (6xs archive)"
             color = discord.Color.green()
-        else:  # streak
-            for r in rows:
-                score = int(r["streak_days"] or 0)
-                if score <= 0:
-                    continue
-                entries.append((int(r["user_id"]), score, "day streak"))
-            title = "6stats Leaderboard - Streaks"
+        else:
+            title = "6stats Leaderboard — Hour streak (6xs archive)"
             color = discord.Color.orange()
 
-        entries.sort(key=lambda x: (-x[1], x[0]))
+        entries = sorted(entries, key=lambda x: (-x[1], x[0]))
         top = entries[:15]
         medals = ("🥇", "🥈", "🥉")
         lines: list[str] = []
@@ -740,7 +939,7 @@ class MessageStatsCog(commands.Cog):
                 m, _ = divmod(rem, 60)
                 score_text = f"{h}h {m}m"
             elif mode == "streak":
-                score_text = f"{score:,} days"
+                score_text = f"{score:,} hrs"
             else:
                 score_text = f"{score:,}"
             lines.append(f"{prefix} **{label}** — **{score_text}**")
@@ -755,26 +954,26 @@ class MessageStatsCog(commands.Cog):
                 m, _ = divmod(rem, 60)
                 mine = f"{h}h {m}m"
             elif mode == "streak" and viewer_score is not None:
-                mine = f"{viewer_score} days"
+                mine = f"{viewer_score} hrs"
             else:
                 mine = f"{viewer_score:,}" if viewer_score is not None else "0"
             em.set_footer(text=f"Server: {guild.name} · Your rank: #{viewer_rank} ({mine})")
         return em
 
     class StatsLeaderboardView(discord.ui.View):
-        def __init__(self, cog: "MessageStatsCog", guild_id: int, author_id: int, rows: list[sqlite3.Row]) -> None:
+        def __init__(self, cog: "MessageStatsCog", guild_id: int, author_id: int) -> None:
             super().__init__(timeout=180)
             self.cog = cog
             self.guild_id = guild_id
             self.author_id = author_id
-            self.rows = rows
             self.mode = "daily"
 
         async def _swap(self, interaction: discord.Interaction, mode: str) -> None:
             if interaction.guild is None or interaction.guild.id != self.guild_id:
                 return await interaction.response.send_message("This leaderboard is no longer valid here.", ephemeral=True)
             self.mode = mode
-            em = self.cog._leaderboard_embed(interaction.guild, mode, self.rows, interaction.user.id)
+            entries = await asyncio.to_thread(_archive_lb_entries_blocking, interaction.guild.id, mode)
+            em = self.cog._leaderboard_embed_from_entries(interaction.guild, mode, entries, interaction.user.id)
             await interaction.response.edit_message(embed=em, view=self)
 
         @discord.ui.button(label="Daily", style=discord.ButtonStyle.blurple)
@@ -868,22 +1067,26 @@ class MessageStatsCog(commands.Cog):
         archive_stats = await asyncio.to_thread(_fetch_archive_stats_blocking, gid, uid)
         bio_slug = await asyncio.to_thread(_fetch_bio_slug_blocking, uid)
         hour_streak = await asyncio.to_thread(_fetch_archive_hour_streak_blocking, gid, uid)
+        arch_sess = await asyncio.to_thread(_fetch_user_archive_session_blocking, gid, uid)
 
-        sess_count = int(row.session_msg_count or 0) if row else 0
-        is_active = sess_count >= ACTIVE_SESSION_MSG_THRESHOLD
         now = time.time()
-        if is_active and row is not None and row.session_start_ts is not None:
-            dur_sec = max(0, int(now - row.session_start_ts))
+        if arch_sess and arch_sess.get("is_active") and arch_sess.get("session_start_ts") is not None:
+            dur_sec = max(0, int(now - float(arch_sess["session_start_ts"])))
             h, rem = divmod(dur_sec, 3600)
             mnt, _ = divmod(rem, 60)
-            activity_val = f"🟢 Active (session: **{h}**h **{mnt}**m)"
-        elif not is_active:
+            cnt = int(arch_sess.get("session_msg_count") or 0)
             activity_val = (
-                "🔴 Inactive — need **≥3** messages within **1 hour** in the server "
-                f"(any channel the bot sees) for an active session."
+                f"🟢 Active (session **{h}**h **{mnt}**m) · **{cnt}** msgs in **mirrored 6xs** channels "
+                f"(gaps ≤ **{SESSION_GAP_SEC // 60}** min)"
             )
+        elif arch_sess is None:
+            activity_val = "Activity unavailable (could not read archive)."
         else:
-            activity_val = "🔴 Inactive"
+            activity_val = (
+                "🔴 Inactive — need **≥3** messages in mirrored **6xs archive** channels within one "
+                f"**{SESSION_GAP_SEC // 60}-minute rolling window**, and your **last archived message** "
+                "within **1 hour** of now."
+            )
 
         streak_days = row.streak_days if row else 0
         hour_streak_n = int(hour_streak) if hour_streak is not None else None
@@ -947,14 +1150,7 @@ class MessageStatsCog(commands.Cog):
                 f"Open the site: {site}/archive"
             )
 
-        em = discord.Embed(
-            title="Message stats",
-            description=(
-                "**6xs.lol** block = mirrored archive only. **Activity** = server-wide session the bot tracks. "
-                "**Streaks** = UTC calendar days (server) + consecutive UTC active hours (archive)."
-            ),
-            color=discord.Color.blurple(),
-        )
+        em = discord.Embed(title="Message stats", color=discord.Color.blurple())
         em.set_author(name=member.display_name, icon_url=member.display_avatar.url)
         em.set_thumbnail(url=member.display_avatar.url)
         em.add_field(
@@ -970,15 +1166,13 @@ class MessageStatsCog(commands.Cog):
 
     @commands.command(name="statslb", aliases=["statsleaderboard", "slb", "6statslb"])
     async def cmd_stats_leaderboard(self, ctx: commands.Context) -> None:
-        """Interactive 6stats leaderboard: daily/lifetime/activity/streak buttons."""
+        """Interactive leaderboard (mirrored 6xs archive — same basis as 6stats)."""
         if not ctx.guild:
             return await ctx.send("Use `6statslb` in a server.", delete_after=8)
 
-        async with self._db_lock:
-            rows = await asyncio.to_thread(_fetch_leaderboard_rows_blocking, ctx.guild.id)
-
-        view = self.StatsLeaderboardView(self, ctx.guild.id, ctx.author.id, rows)
-        em = self._leaderboard_embed(ctx.guild, "daily", rows, ctx.author.id)
+        entries = await asyncio.to_thread(_archive_lb_entries_blocking, ctx.guild.id, "daily")
+        view = self.StatsLeaderboardView(self, ctx.guild.id, ctx.author.id)
+        em = self._leaderboard_embed_from_entries(ctx.guild, "daily", entries, ctx.author.id)
         await ctx.send(embed=em, view=view)
 
     @commands.command(
