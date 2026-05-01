@@ -5,6 +5,7 @@ Uses SQLite + 5-minute rank cache; Discord native timestamps in embeds.
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -165,6 +166,88 @@ def _utc_today_str() -> str:
 
 def _utc_yesterday_str() -> str:
     return (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+
+
+def _public_site_base() -> str:
+    return (os.getenv("PUBLIC_SITE_URL", "https://6xs.lol") or "https://6xs.lol").strip().rstrip("/")
+
+
+def _fetch_archive_stats_blocking(guild_id: int, user_id: int) -> Optional[dict[str, Any]]:
+    """Counts rows in Supabase archive_messages for this guild + user (same source as 6xs.lol)."""
+    main = _sys.modules.get("__main__") or _sys.modules.get("index")
+    get_client = getattr(main, "_get_supabase_client", None)
+    if not callable(get_client):
+        return None
+    client = get_client()
+    if client is None:
+        return None
+    gid = str(guild_id)
+    uid = str(user_id)
+    try:
+        cresp = (
+            client.table("archive_messages")
+            .select("message_id", count="exact")
+            .eq("guild_id", gid)
+            .eq("author_id", uid)
+            .execute()
+        )
+        total = int(getattr(cresp, "count", None) or 0)
+        first_iso: Optional[str] = None
+        last_iso: Optional[str] = None
+        if total > 0:
+            asc = (
+                client.table("archive_messages")
+                .select("created_at_discord")
+                .eq("guild_id", gid)
+                .eq("author_id", uid)
+                .order("created_at_discord", desc=False)
+                .limit(1)
+                .execute()
+            )
+            desc = (
+                client.table("archive_messages")
+                .select("created_at_discord")
+                .eq("guild_id", gid)
+                .eq("author_id", uid)
+                .order("created_at_discord", desc=True)
+                .limit(1)
+                .execute()
+            )
+            ad = getattr(asc, "data", None) or []
+            dd = getattr(desc, "data", None) or []
+            if ad:
+                first_iso = str(ad[0].get("created_at_discord") or "").strip() or None
+            if dd:
+                last_iso = str(dd[0].get("created_at_discord") or "").strip() or None
+        return {"total": total, "first_at": first_iso, "last_at": last_iso}
+    except Exception as e:
+        print(f"[6stats] archive (Supabase) failed: {e!r}")
+        return None
+
+
+def _fetch_bio_slug_blocking(user_id: int) -> Optional[str]:
+    main = _sys.modules.get("__main__") or _sys.modules.get("index")
+    get_client = getattr(main, "_get_supabase_client", None)
+    if not callable(get_client):
+        return None
+    client = get_client()
+    if client is None:
+        return None
+    try:
+        r = (
+            client.table("user_bio_profiles")
+            .select("slug")
+            .eq("user_id", str(user_id))
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(r, "data", None) or []
+        if not rows:
+            return None
+        s = str(rows[0].get("slug") or "").strip()
+        return s or None
+    except Exception:
+        return None
 
 
 @dataclass
@@ -696,6 +779,9 @@ class MessageStatsCog(commands.Cog):
         async with self._db_lock:
             row = await asyncio.to_thread(_fetch_user_stats_blocking, gid, uid)
 
+        archive_stats = await asyncio.to_thread(_fetch_archive_stats_blocking, gid, uid)
+        bio_slug = await asyncio.to_thread(_fetch_bio_slug_blocking, uid)
+
         # Bust rank cache on self-view so the user sees their latest position quickly.
         if member.id == ctx.author.id:
             self._rank_cache.pop(gid, None)
@@ -741,6 +827,28 @@ class MessageStatsCog(commands.Cog):
             except Exception:
                 footer_parts.append(f"Saved TZ: {row.timezone} (invalid — use `6settimezone clear`)")
 
+        site = _public_site_base()
+        if archive_stats is not None:
+            arch_n = int(archive_stats.get("total") or 0)
+            fa = archive_stats.get("first_at")
+            la = archive_stats.get("last_at")
+            if fa and la:
+                span_txt = f"First → last archived: **{fa[:10]}** → **{la[:10]}**"
+            elif arch_n == 0:
+                span_txt = "No messages in the web archive yet (mirrored channels only)."
+            else:
+                span_txt = "Archive dates unavailable."
+            if bio_slug:
+                bio_line = f"Bio: {site}/{bio_slug}"
+            else:
+                bio_line = f"Bio: set your slug at {site}/profile/edit (log in on the site)."
+            archive_block = f"💬 **{arch_n:,}** messages in **6xs.lol** archive\n{span_txt}\n{bio_line}"
+        else:
+            archive_block = (
+                "Archive stats unavailable (check Supabase). "
+                f"Open the site: {site}/archive"
+            )
+
         em = discord.Embed(
             title="Message stats",
             color=discord.Color.blurple(),
@@ -748,7 +856,12 @@ class MessageStatsCog(commands.Cog):
         em.set_author(name=member.display_name, icon_url=member.display_avatar.url)
         em.set_thumbnail(url=member.display_avatar.url)
         em.add_field(
-            name="Lifetime",
+            name="6xs.lol archive (mirrored channels)",
+            value=archive_block,
+            inline=False,
+        )
+        em.add_field(
+            name="All channels (bot tally)",
             value=f"💬 **{lifetime:,}** messages · 🏆 Rank: **{life_rank}**",
             inline=False,
         )
