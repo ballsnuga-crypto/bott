@@ -18,8 +18,8 @@ import discord
 from discord.errors import DiscordServerError, HTTPException
 from discord.ext import commands, tasks
 
-GROK_API_URL = os.getenv("GROK_API_URL", "https://api.x.ai/v1/chat/completions")
-FUNNY_GROK_MODEL = os.getenv("FUNNY_GROK_MODEL") or os.getenv("GROK_MODEL", "grok-4-1-fast")
+GROK_API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
+FUNNY_GROK_MODEL = os.getenv("FUNNY_GROK_MODEL") or os.getenv("OPENROUTER_MODEL", "tngtech/deepseek-r1t2-chimera")
 
 FUNNY_PRIZE_COINS = int(os.getenv("FUNNY_PRIZE_COINS", "5000"))
 FUNNY_ANNOUNCE_CHANNEL_ID = int(os.getenv("FUNNY_ANNOUNCE_CHANNEL_ID", "0"))
@@ -94,7 +94,7 @@ Rules:
 
 
 def _grok_key() -> Optional[str]:
-    return os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
+    return os.getenv("OPENROUTER_API_KEY") or os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
 
 
 def _is_transient_discord_api_error(exc: BaseException) -> bool:
@@ -241,7 +241,7 @@ async def _grok_post(
 ) -> str:
     key = _grok_key()
     if not key:
-        raise RuntimeError("Missing XAI_API_KEY or GROK_API_KEY")
+        raise RuntimeError("Missing OPENROUTER_API_KEY")
     payload = {
         "model": FUNNY_GROK_MODEL,
         "messages": [
@@ -254,6 +254,8 @@ async def _grok_post(
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://6xs.lol",
+        "X-Title": "6XS Bot",
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -261,7 +263,7 @@ async def _grok_post(
         ) as resp:
             body = await resp.text()
             if resp.status != 200:
-                raise RuntimeError(f"Grok API {resp.status}: {body[:500]}")
+                raise RuntimeError(f"OpenRouter API {resp.status}: {body[:500]}")
             data = json.loads(body)
     try:
         return data["choices"][0]["message"]["content"].strip()
@@ -504,7 +506,7 @@ class FunnyCog(commands.Cog):
         if not _grok_key():
             await _funny_safe_send(
                 ctx,
-                "❌ API not configured (**XAI_API_KEY** / **GROK_API_KEY**).",
+                "❌ API not configured (**OPENROUTER_API_KEY**).",
                 delete_after=12,
             )
             return

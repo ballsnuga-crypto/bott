@@ -23,8 +23,8 @@ INCOMPLETE_COOLDOWN_SEC = 2 * 24 * 3600  # 2 days to restart if abandoned
 # Server onboarding: answer that assigns this role → bot DMs the MBTI flow (same as "Start in DMs").
 MBTI_ONBOARDING_ROLE_ID = int(os.getenv("MBTI_ONBOARDING_ROLE_ID", "1493375742032220191"))
 
-GROK_API_URL = "https://api.x.ai/v1/chat/completions"
-GROK_MODEL = os.getenv("GROK_MODEL", "grok-4-1-fast")
+GROK_API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
+GROK_MODEL = os.getenv("OPENROUTER_MODEL", "tngtech/deepseek-r1t2-chimera")
 
 MBTI_TYPES = frozenset(
     "INTJ INTP ENTJ ENTP INFJ INFP ENFJ ENFP "
@@ -85,13 +85,13 @@ Hard rules:
 
 
 def _grok_key() -> Optional[str]:
-    return os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
+    return os.getenv("OPENROUTER_API_KEY") or os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
 
 
 async def _grok_personality(user_block: str) -> str:
     key = _grok_key()
     if not key:
-        raise RuntimeError("Missing XAI_API_KEY or GROK_API_KEY")
+        raise RuntimeError("Missing OPENROUTER_API_KEY")
     payload = {
         "model": GROK_MODEL,
         "messages": [
@@ -104,12 +104,14 @@ async def _grok_personality(user_block: str) -> str:
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://6xs.lol",
+        "X-Title": "6XS Bot",
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(GROK_API_URL, headers=headers, json=payload) as resp:
             body = await resp.text()
             if resp.status != 200:
-                raise RuntimeError(f"Grok API {resp.status}: {body[:500]}")
+                raise RuntimeError(f"OpenRouter API {resp.status}: {body[:500]}")
             data = json.loads(body)
     try:
         return data["choices"][0]["message"]["content"].strip()

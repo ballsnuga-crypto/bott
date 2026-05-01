@@ -155,9 +155,9 @@ PINTEREST_POSTED_FILE = SCRIPT_DIR / "pinterest_posted.json"
 MASS_BAN_WINDOW = 1800
 MASS_BAN_THRESHOLD = 5
 
-# Grok (xAI) — put XAI_API_KEY in .env (see .env.example) or in the environment
-GROK_API_URL = "https://api.x.ai/v1/chat/completions"
-GROK_MODEL = os.getenv("GROK_MODEL", "grok-4-1-fast")
+# OpenRouter AI
+OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL") or os.getenv("GROK_MODEL", "tngtech/deepseek-r1t2-chimera")
 
 # Confessions: set channel ID, or leave 0 to use a channel named "confessions"
 CONFESSIONS_CHANNEL_ID = 0
@@ -1284,7 +1284,11 @@ async def maybe_punish_discord_link(message: discord.Message) -> bool:
 
 
 def _grok_api_key() -> Optional[str]:
-    return os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
+    return (
+        os.getenv("OPENROUTER_API_KEY")
+        or os.getenv("XAI_API_KEY")
+        or os.getenv("GROK_API_KEY")
+    )
 
 
 def format_roast_line(raw: str) -> str:
@@ -1404,10 +1408,10 @@ async def grok_chat(
 ) -> str:
     key = _grok_api_key()
     if not key:
-        raise RuntimeError("Missing XAI_API_KEY or GROK_API_KEY")
+        raise RuntimeError("Missing OPENROUTER_API_KEY")
 
     payload = {
-        "model": GROK_MODEL,
+        "model": OPENROUTER_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -1418,17 +1422,19 @@ async def grok_chat(
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://6xs.lol",
+        "X-Title": "6XS Bot",
     }
     async with aiohttp.ClientSession() as session:
-        async with session.post(GROK_API_URL, headers=headers, json=payload) as resp:
+        async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as resp:
             body = await resp.text()
             if resp.status != 200:
-                raise RuntimeError(f"Grok API {resp.status}: {body[:500]}")
+                raise RuntimeError(f"OpenRouter API {resp.status}: {body[:500]}")
             data = json.loads(body)
     try:
         return data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Bad Grok response: {body[:400]}") from e
+        raise RuntimeError(f"Bad OpenRouter response: {body[:400]}") from e
 
 
 async def grok_complete(user_content: str) -> str:
@@ -3376,7 +3382,7 @@ async def topic_cmd(ctx):
     if not isinstance(ch, (discord.TextChannel, discord.Thread)):
         return await ctx.send("Use **`6topic`** in a text channel or thread.", delete_after=10)
     if not _grok_api_key():
-        return await ctx.send("Grok isn't configured (set **XAI_API_KEY** or **GROK_API_KEY**).", delete_after=12)
+        return await ctx.send("AI isn't configured (set **OPENROUTER_API_KEY**).", delete_after=12)
     me = ctx.guild.me
     if me:
         perms = ch.permissions_for(me)
@@ -3468,7 +3474,7 @@ async def summarize_cmd(ctx: commands.Context) -> None:
         return await ctx.send("Use `6summarize` in a server channel.", delete_after=8)
     if not _grok_api_key():
         return await ctx.send(
-            "Grok isn’t configured — set **XAI_API_KEY** or **GROK_API_KEY** in the environment.",
+            "AI isn’t configured — set **OPENROUTER_API_KEY** in the environment.",
             delete_after=12,
         )
 
@@ -3545,7 +3551,7 @@ async def ai_cmd(ctx, *, question: str):
         return await ctx.send(f"Usage: **`{PREFIX}ai** <your question>`", delete_after=10)
     if not _grok_api_key():
         return await ctx.send(
-            "Grok isn’t configured — set **XAI_API_KEY** or **GROK_API_KEY** in the environment.",
+            "AI isn’t configured — set **OPENROUTER_API_KEY** in the environment.",
             delete_after=12,
         )
 
@@ -3731,6 +3737,10 @@ async def kickallun(ctx: commands.Context) -> None:
     failed = 0
     for m in targets:
         try:
+            try:
+                await m.send("You've been kicked from 6XS for not verifying\nJoin back here discord.gg/6xz")
+            except Exception:
+                pass
             await m.kick(reason=f"Bulk unverified kick by {ctx.author} (missing 6XS Member role)")
             kicked += 1
             t = pending_unverified_kick.pop(m.id, None)
@@ -3796,6 +3806,10 @@ async def _kick_if_still_unverified_after_delay(guild_id: int, user_id: int, del
             return
         if member.top_role >= me.top_role:
             return
+        try:
+            await member.send("You've been kicked from 6XS for not verifying\nJoin back here discord.gg/6xz")
+        except Exception:
+            pass
         await member.kick(reason="Auto-kick: unverified for 1 hour (excluding server boosters)")
     except asyncio.CancelledError:
         return
