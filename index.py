@@ -381,9 +381,18 @@ _discord_link_warn_lock = asyncio.Lock()
 
 # Uplift DMs (opt-in by default, rare + rate-limited)
 UPLIFT_STATE_FILE = _SCRIPT_ROOT / "uplift_dm_state.json"
-UPLIFT_USER_COOLDOWN_SEC = 24 * 60 * 60
-UPLIFT_GLOBAL_COOLDOWN_SEC = 90
-UPLIFT_GLOBAL_MAX_PER_DAY = 40
+UPLIFT_COOLDOWN_MIN_SEC = 6 * 60 * 60
+UPLIFT_COOLDOWN_MAX_SEC = 16 * 60 * 60
+UPLIFT_REQUIRED_ROLE_ID = 1498121009864376350
+UPLIFT_MIN_MESSAGES_LAST_12H = 6
+UPLIFT_BURST_MESSAGES = 30
+UPLIFT_BURST_WINDOW_SEC = 10 * 60
+UPLIFT_LATE_NIGHT_START_HOUR = 23
+UPLIFT_LATE_NIGHT_END_HOUR = 3
+UPLIFT_TZ_OFFSET_HOURS = int(os.getenv("UPLIFT_TZ_OFFSET_HOURS", "-10"))
+UPLIFT_ARCHIVE_MESSAGE_LIMIT = 50
+UPLIFT_ARCHIVE_LINE_MAX_CHARS = 140
+UPLIFT_ARCHIVE_MAX_PROMPT_CHARS = 5200
 _uplift_lock = asyncio.Lock()
 _uplift_state: dict[str, Any] = {
     "opt_out": [],
@@ -392,8 +401,32 @@ _uplift_state: dict[str, Any] = {
     "global_day": "",
     "global_count": 0,
     "last_text_by_user": {},
+    "next_due_by_user": {},
+    "dm_reply_budget_by_user": {},
 }
 _uplift_recent_by_user: defaultdict[int, list[str]] = defaultdict(list)
+_uplift_msg_times_by_user: defaultdict[int, list[float]] = defaultdict(list)
+UPLIFT_VIBE_KEYWORDS = (
+    "tired", "grinding", "stressed", "long day", "rough", "exhausted",
+    "burnt", "burned out", "drained", "overwhelmed", "sad", "anxious",
+)
+UPLIFT_AI_SYSTEM_PROMPT = """Write one short uplifting DM based on a user's recent chat lines.
+
+Rules:
+- one sentence only, lowercase, natural discord style
+- 8 to 22 words
+- specific to their vibe/topics from the log, but do not quote exact lines
+- no cringe, no therapy tone, no emojis, no hashtags
+- must feel different from the previous DM if provided
+- output only the sentence, nothing else"""
+UPLIFT_DM_REPLY_SYSTEM_PROMPT = """Reply to a user's DM in one short sentence.
+
+Rules:
+- funny, warm, a little flirty, natural
+- 6 to 20 words
+- lowercase, no emoji spam
+- no cringe therapy speech
+- output only one sentence"""
 
 TopicChannel = Union[discord.TextChannel, discord.Thread]
 
@@ -993,6 +1026,84 @@ def _uplift_record_recent_text(user_id: int, text: str) -> None:
         del buf[:-12]
 
 
+def _uplift_compact_text_line(text: str) -> str:
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    if not t:
+        return ""
+    return t[:UPLIFT_ARCHIVE_LINE_MAX_CHARS]
+
+
+async def _uplift_fetch_recent_archive_lines(
+    user_id: int, limit: int = UPLIFT_ARCHIVE_MESSAGE_LIMIT
+) -> tuple[list[str], int]:
+    client = _get_supabase_client()
+    if client is None:
+        return [], 0
+    try:
+        resp = (
+            client.table("archive_messages")
+            .select("content,created_at_discord")
+            .eq("author_id", str(user_id))
+            .order("created_at_discord", desc=True)
+            .limit(max(1, int(limit)))
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+    except Exception as e:
+        print(f"[UPLIFT] archive fetch failed for {user_id}: {e}")
+        return [], 0
+    out: list[str] = []
+    cutoff = time.time() - (12 * 60 * 60)
+    active_12h = 0
+    for r in rows:
+        ts_raw = str((r or {}).get("created_at_discord") or "").strip()
+        if ts_raw:
+            try:
+                dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                if dt.timestamp() >= cutoff:
+                    active_12h += 1
+            except Exception:
+                pass
+        txt = _uplift_compact_text_line(str((r or {}).get("content") or ""))
+        if txt:
+            out.append(txt)
+    return out[:limit], active_12h
+
+
+async def _uplift_generate_from_archive(user_id: int, user_name: str, archive_lines: list[str]) -> Optional[str]:
+    if not archive_lines:
+        return None
+    last_map = _uplift_state.get("last_text_by_user") or {}
+    last_text = str(last_map.get(str(user_id)) or last_map.get(f"name:{user_name}") or "").strip()
+    raw_block = "\n".join(f"- {ln}" for ln in archive_lines)
+    raw_block = raw_block[:UPLIFT_ARCHIVE_MAX_PROMPT_CHARS]
+    user_prompt = (
+        f"user display name: {user_name}\n"
+        f"previous dm (must be different): {last_text or '(none)'}\n"
+        "recent messages (raw plain text, newest first):\n"
+        f"{raw_block}\n"
+        "write the new uplifting dm now."
+    )
+    try:
+        msg = await grok_chat(
+            UPLIFT_AI_SYSTEM_PROMPT,
+            user_prompt,
+            max_tokens=64,
+            temperature=0.9,
+        )
+    except Exception as e:
+        print(f"[UPLIFT] ai generation failed for {user_id}: {e}")
+        return None
+
+    msg = re.sub(r"\s+", " ", (msg or "").strip().strip('"').strip("'"))
+    if not msg:
+        return None
+    msg = msg[:220]
+    if last_text and msg.lower() == last_text.lower():
+        msg = f"{user_name.lower()} your energy in chat is genuinely good, keep bringing that same presence."
+    return msg
+
+
 def _uplift_pick_message(user_id: int, user_name: str, recent: list[str]) -> Optional[str]:
     blob = " ".join(recent[-6:]).lower()
     if not blob:
@@ -1114,6 +1225,76 @@ def _uplift_pick_non_repeating(user_id: int, user_name: str, pool: list[str]) ->
     return choice
 
 
+def _uplift_local_hour(now_ts: float) -> int:
+    return int(time.gmtime(now_ts + (UPLIFT_TZ_OFFSET_HOURS * 3600)).tm_hour)
+
+
+def _uplift_is_late_night(now_ts: float) -> bool:
+    h = _uplift_local_hour(now_ts)
+    if UPLIFT_LATE_NIGHT_START_HOUR <= UPLIFT_LATE_NIGHT_END_HOUR:
+        return UPLIFT_LATE_NIGHT_START_HOUR <= h <= UPLIFT_LATE_NIGHT_END_HOUR
+    return h >= UPLIFT_LATE_NIGHT_START_HOUR or h <= UPLIFT_LATE_NIGHT_END_HOUR
+
+
+def _uplift_has_vibe_keyword(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in UPLIFT_VIBE_KEYWORDS)
+
+
+def _uplift_record_activity_and_is_burst(user_id: int, now_ts: float) -> bool:
+    arr = _uplift_msg_times_by_user[user_id]
+    cutoff = now_ts - UPLIFT_BURST_WINDOW_SEC
+    arr[:] = [x for x in arr if x >= cutoff]
+    arr.append(now_ts)
+    return len(arr) >= UPLIFT_BURST_MESSAGES
+
+
+async def maybe_handle_uplift_dm_reply(message: discord.Message) -> bool:
+    if message.guild is not None:
+        return False
+    if message.author.bot:
+        return False
+    uid_key = str(message.author.id)
+    async with _uplift_lock:
+        budget_map = _uplift_state.get("dm_reply_budget_by_user") or {}
+        budget = int(budget_map.get(uid_key) or 0)
+        if budget <= 0:
+            return False
+        user_text = (message.content or "").strip()
+        if not user_text:
+            return False
+        last_text_map = _uplift_state.get("last_text_by_user") or {}
+        last_bot_text = str(last_text_map.get(uid_key) or "").strip()
+        prompt = (
+            f"user said: {user_text[:500]}\n"
+            f"your previous message: {last_bot_text[:300]}\n"
+            "reply naturally now."
+        )
+        try:
+            reply = await grok_chat(
+                UPLIFT_DM_REPLY_SYSTEM_PROMPT,
+                prompt,
+                max_tokens=64,
+                temperature=1.0,
+            )
+        except Exception as e:
+            print(f"[UPLIFT DM] reply generation failed: {e}")
+            return False
+        reply = re.sub(r"\s+", " ", (reply or "").strip()).strip('"').strip("'")[:220]
+        if not reply:
+            return False
+        try:
+            await message.channel.send(reply)
+        except discord.HTTPException:
+            return False
+        budget_map[uid_key] = max(0, budget - 1)
+        _uplift_state["dm_reply_budget_by_user"] = budget_map
+        last_text_map[uid_key] = reply
+        _uplift_state["last_text_by_user"] = last_text_map
+        _uplift_save_state_sync()
+        return True
+
+
 async def maybe_send_uplift_dm(message: discord.Message) -> None:
     if not message.guild or message.author.bot:
         return
@@ -1123,36 +1304,48 @@ async def maybe_send_uplift_dm(message: discord.Message) -> None:
         return
     if _uplift_is_opted_out(message.author.id):
         return
-
-    text = (message.content or "").strip()
-    # don't DM off commands, links, or super short pings
-    if not text or text.startswith(PREFIX) or len(text) < 12:
-        _uplift_record_recent_text(message.author.id, text)
+    required_role = message.guild.get_role(UPLIFT_REQUIRED_ROLE_ID)
+    if required_role is None or required_role not in message.author.roles:
         return
 
-    _uplift_record_recent_text(message.author.id, text)
-    recent = _uplift_recent_by_user.get(message.author.id, [])
+    text = (message.content or "").strip()
+    # don't trigger off commands or empty lines
+    if not text or text.startswith(PREFIX):
+        return
+
+    now = time.time()
+    burst_active = _uplift_record_activity_and_is_burst(message.author.id, now)
+    vibe_trigger = _uplift_has_vibe_keyword(text)
+    late_night = _uplift_is_late_night(now)
+    # Natural trigger:
+    # - keyword distress/support vibes anytime, OR
+    # - active burst + late-night window.
+    if not (vibe_trigger or (burst_active and late_night)):
+        return
 
     async with _uplift_lock:
         now = time.time()
-        today = _uplift_today_key()
-        if str(_uplift_state.get("global_day") or "") != today:
-            _uplift_state["global_day"] = today
-            _uplift_state["global_count"] = 0
-
-        global_last = float(_uplift_state.get("global_last") or 0.0)
-        if now - global_last < UPLIFT_GLOBAL_COOLDOWN_SEC:
-            return
-        if int(_uplift_state.get("global_count") or 0) >= UPLIFT_GLOBAL_MAX_PER_DAY:
-            return
-
+        uid_key = str(message.author.id)
         last_dm_map = _uplift_state.get("last_dm") or {}
-        last_user_ts = float(last_dm_map.get(str(message.author.id)) or 0.0)
-        if now - last_user_ts < UPLIFT_USER_COOLDOWN_SEC:
+        last_user_ts = float(last_dm_map.get(uid_key) or 0.0)
+        due_map = _uplift_state.get("next_due_by_user") or {}
+        next_due = float(due_map.get(uid_key) or 0.0)
+        if next_due <= 0 and last_user_ts > 0:
+            next_due = last_user_ts + random.randint(UPLIFT_COOLDOWN_MIN_SEC, UPLIFT_COOLDOWN_MAX_SEC)
+        if next_due > 0 and now < next_due:
             return
 
-        # Generate the DM text (may decide "not worth DMing")
-        dm_text = _uplift_pick_message(message.author.id, message.author.display_name, list(recent))
+        # Build uplift from last 50 archived messages for this user (low-token plain-text prompt).
+        archive_lines, active_12h = await _uplift_fetch_recent_archive_lines(
+            message.author.id, UPLIFT_ARCHIVE_MESSAGE_LIMIT
+        )
+        if active_12h < UPLIFT_MIN_MESSAGES_LAST_12H:
+            return
+        dm_text = await _uplift_generate_from_archive(
+            message.author.id,
+            message.author.display_name,
+            archive_lines,
+        )
         if not dm_text:
             return
 
@@ -1162,17 +1355,20 @@ async def maybe_send_uplift_dm(message: discord.Message) -> None:
             await dm.send((dm_text + footer)[:1900])
         except discord.Forbidden:
             # Can't DM; don't keep retrying constantly.
-            last_dm_map[str(message.author.id)] = now
+            last_dm_map[uid_key] = now
         except discord.HTTPException:
             return
 
-        last_dm_map[str(message.author.id)] = now
+        last_dm_map[uid_key] = now
         _uplift_state["last_dm"] = last_dm_map
         last_text_map = _uplift_state.get("last_text_by_user") or {}
-        last_text_map[str(message.author.id)] = dm_text
+        last_text_map[uid_key] = dm_text
         _uplift_state["last_text_by_user"] = last_text_map
-        _uplift_state["global_last"] = now
-        _uplift_state["global_count"] = int(_uplift_state.get("global_count") or 0) + 1
+        due_map[uid_key] = now + random.randint(UPLIFT_COOLDOWN_MIN_SEC, UPLIFT_COOLDOWN_MAX_SEC)
+        _uplift_state["next_due_by_user"] = due_map
+        dm_budget_map = _uplift_state.get("dm_reply_budget_by_user") or {}
+        dm_budget_map[uid_key] = 2
+        _uplift_state["dm_reply_budget_by_user"] = dm_budget_map
         _uplift_save_state_sync()
 
 
@@ -4864,6 +5060,13 @@ async def cmd_xs_rescan(ctx, mode: Optional[str] = None):
 
 @bot.event
 async def on_message(message: discord.Message):
+    if not message.author.bot and message.guild is None:
+        try:
+            handled = await maybe_handle_uplift_dm_reply(message)
+            if handled:
+                return
+        except Exception as e:
+            print(f"[UPLIFT DM] {e}")
     link_blocked = False
     if not message.author.bot and message.guild:
         try:
