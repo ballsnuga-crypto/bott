@@ -219,7 +219,20 @@ def _fetch_archive_stats_blocking(guild_id: int, user_id: int) -> Optional[dict[
                 first_iso = str(ad[0].get("created_at_discord") or "").strip() or None
             if dd:
                 last_iso = str(dd[0].get("created_at_discord") or "").strip() or None
-        return {"total": total, "first_at": first_iso, "last_at": last_iso}
+        tday = datetime.now(timezone.utc).date()
+        today_start = f"{tday.isoformat()}T00:00:00+00:00"
+        tomorrow_start = f"{(tday + timedelta(days=1)).isoformat()}T00:00:00+00:00"
+        tresp = (
+            client.table("archive_messages")
+            .select("message_id", count="exact")
+            .eq("guild_id", gid)
+            .eq("author_id", uid)
+            .gte("created_at_discord", today_start)
+            .lt("created_at_discord", tomorrow_start)
+            .execute()
+        )
+        today_archived = int(getattr(tresp, "count", None) or 0)
+        return {"total": total, "today": today_archived, "first_at": first_iso, "last_at": last_iso}
     except Exception as e:
         print(f"[6stats] archive (Supabase) failed: {e!r}")
         return None
@@ -768,7 +781,6 @@ class MessageStatsCog(commands.Cog):
 
         gid = ctx.guild.id
         uid = member.id
-        today = _utc_today_str()
 
         # Self-heal: the command message itself should count — make sure it's recorded
         # before we read from DB (the on_message hook runs this too, but if the cog was
@@ -781,41 +793,6 @@ class MessageStatsCog(commands.Cog):
 
         archive_stats = await asyncio.to_thread(_fetch_archive_stats_blocking, gid, uid)
         bio_slug = await asyncio.to_thread(_fetch_bio_slug_blocking, uid)
-
-        # Bust rank cache on self-view so the user sees their latest position quickly.
-        if member.id == ctx.author.id:
-            self._rank_cache.pop(gid, None)
-
-        life_ranks, daily_ranks = await self._get_rank_maps(gid)
-
-        lifetime = row.lifetime_messages if row else 0
-        life_rank = life_ranks.get(uid)
-        if life_rank is None and lifetime > 0:
-            life_rank = len(life_ranks) + 1
-        elif life_rank is None:
-            life_rank = "—"
-
-        daily_total = row.daily_messages_today if row and row.daily_day_key == today else 0
-        daily_rank = daily_ranks.get(uid)
-        if daily_rank is None and daily_total > 0:
-            daily_rank = len(daily_ranks) + 1
-        elif daily_rank is None:
-            daily_rank = "—"
-
-        sess_count = row.session_msg_count if row else 0
-        is_active = sess_count >= ACTIVE_SESSION_MSG_THRESHOLD
-        now = time.time()
-        if is_active and row and row.session_start_ts is not None:
-            dur_sec = max(0, int(now - row.session_start_ts))
-            h, rem = divmod(dur_sec, 3600)
-            mnt, _ = divmod(rem, 60)
-            activity_val = f"🟢 Active (session: **{h}**h **{mnt}**m)"
-        elif not is_active:
-            activity_val = "🔴 Inactive (need **≥3** messages within **1 hour** for an active session)"
-        else:
-            activity_val = "🔴 Inactive"
-
-        streak_n = row.streak_days if row else 0
 
         ts = int(time.time())
         footer_parts = [f"Local time: <t:{ts}:t>"]
@@ -830,19 +807,24 @@ class MessageStatsCog(commands.Cog):
         site = _public_site_base()
         if archive_stats is not None:
             arch_n = int(archive_stats.get("total") or 0)
+            arch_today = int(archive_stats.get("today") or 0)
             fa = archive_stats.get("first_at")
             la = archive_stats.get("last_at")
             if fa and la:
                 span_txt = f"First → last archived: **{fa[:10]}** → **{la[:10]}**"
             elif arch_n == 0:
-                span_txt = "No messages in the web archive yet (mirrored channels only)."
+                span_txt = "No messages in the archive yet (mirrored channels only)."
             else:
                 span_txt = "Archive dates unavailable."
             if bio_slug:
                 bio_line = f"Bio: {site}/{bio_slug}"
             else:
                 bio_line = f"Bio: set your slug at {site}/profile/edit (log in on the site)."
-            archive_block = f"💬 **{arch_n:,}** messages in **6xs.lol** archive\n{span_txt}\n{bio_line}"
+            archive_block = (
+                f"💬 **{arch_n:,}** lifetime · 📅 **{arch_today:,}** today (UTC, archived channels)\n"
+                f"{span_txt}\n{bio_line}\n"
+                f"_Only channels mirrored on 6xs.lol count here._"
+            )
         else:
             archive_block = (
                 "Archive stats unavailable (check Supabase). "
@@ -851,27 +833,16 @@ class MessageStatsCog(commands.Cog):
 
         em = discord.Embed(
             title="Message stats",
+            description="Counts from **6xs.lol** mirrored archive (same as the website).",
             color=discord.Color.blurple(),
         )
         em.set_author(name=member.display_name, icon_url=member.display_avatar.url)
         em.set_thumbnail(url=member.display_avatar.url)
         em.add_field(
-            name="6xs.lol archive (mirrored channels)",
+            name="6xs.lol",
             value=archive_block,
             inline=False,
         )
-        em.add_field(
-            name="All channels (bot tally)",
-            value=f"💬 **{lifetime:,}** messages · 🏆 Rank: **{life_rank}**",
-            inline=False,
-        )
-        em.add_field(
-            name="Today (all channels in this server)",
-            value=f"📅 **{daily_total:,}** messages · 🏆 Daily rank: **{daily_rank}**",
-            inline=False,
-        )
-        em.add_field(name="Activity", value=activity_val, inline=False)
-        em.add_field(name="Streaks", value=f"🔥 **{streak_n}** day(s) (UTC calendar)", inline=False)
         em.set_footer(text=" · ".join(footer_parts))
 
         await ctx.send(embed=em)
