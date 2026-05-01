@@ -172,17 +172,10 @@ def _public_site_base() -> str:
     return (os.getenv("PUBLIC_SITE_URL", "https://6xs.lol") or "https://6xs.lol").strip().rstrip("/")
 
 
-def _fetch_archive_stats_blocking(guild_id: int, user_id: int) -> Optional[dict[str, Any]]:
-    """Counts rows in Supabase archive_messages for this guild + user (same source as 6xs.lol)."""
-    main = _sys.modules.get("__main__") or _sys.modules.get("index")
-    get_client = getattr(main, "_get_supabase_client", None)
-    if not callable(get_client):
-        return None
-    client = get_client()
-    if client is None:
-        return None
-    gid = str(guild_id)
-    uid = str(user_id)
+def _archive_stats_fallback_blocking(
+    client: Any, gid: str, uid: str, today_start: str, tomorrow_start: str
+) -> Optional[dict[str, Any]]:
+    """Table queries only — no ranks. Used if RPC archive_user_stats_and_ranks is not installed."""
     try:
         cresp = (
             client.table("archive_messages")
@@ -219,9 +212,6 @@ def _fetch_archive_stats_blocking(guild_id: int, user_id: int) -> Optional[dict[
                 first_iso = str(ad[0].get("created_at_discord") or "").strip() or None
             if dd:
                 last_iso = str(dd[0].get("created_at_discord") or "").strip() or None
-        tday = datetime.now(timezone.utc).date()
-        today_start = f"{tday.isoformat()}T00:00:00+00:00"
-        tomorrow_start = f"{(tday + timedelta(days=1)).isoformat()}T00:00:00+00:00"
         tresp = (
             client.table("archive_messages")
             .select("message_id", count="exact")
@@ -232,10 +222,94 @@ def _fetch_archive_stats_blocking(guild_id: int, user_id: int) -> Optional[dict[
             .execute()
         )
         today_archived = int(getattr(tresp, "count", None) or 0)
-        return {"total": total, "today": today_archived, "first_at": first_iso, "last_at": last_iso}
+        return {
+            "total": total,
+            "today": today_archived,
+            "first_at": first_iso,
+            "last_at": last_iso,
+            "lifetime_rank": None,
+            "today_rank": None,
+        }
     except Exception as e:
-        print(f"[6stats] archive (Supabase) failed: {e!r}")
+        print(f"[6stats] archive fallback (Supabase) failed: {e!r}")
         return None
+
+
+def _fetch_archive_stats_blocking(guild_id: int, user_id: int) -> Optional[dict[str, Any]]:
+    """Archive message counts + lifetime/today RANK() via RPC (same source as 6xs.lol)."""
+    main = _sys.modules.get("__main__") or _sys.modules.get("index")
+    get_client = getattr(main, "_get_supabase_client", None)
+    if not callable(get_client):
+        return None
+    client = get_client()
+    if client is None:
+        return None
+    gid = str(guild_id)
+    uid = str(user_id)
+    tday = datetime.now(timezone.utc).date()
+    today_start = f"{tday.isoformat()}T00:00:00+00:00"
+    tomorrow_start = f"{(tday + timedelta(days=1)).isoformat()}T00:00:00+00:00"
+    try:
+        rpc = client.rpc(
+            "archive_user_stats_and_ranks",
+            {
+                "p_guild_id": gid,
+                "p_author_id": uid,
+                "p_today_start": today_start,
+                "p_today_end": tomorrow_start,
+            },
+        ).execute()
+        rows = getattr(rpc, "data", None) or []
+        if rows and isinstance(rows[0], dict):
+            o = rows[0]
+            fc = o.get("first_at")
+            la = o.get("last_at")
+            lr = o.get("lifetime_rank")
+            tr = o.get("today_rank")
+            return {
+                "total": int(o.get("lifetime_count") or 0),
+                "today": int(o.get("today_count") or 0),
+                "first_at": str(fc).strip() if fc is not None else None,
+                "last_at": str(la).strip() if la is not None else None,
+                "lifetime_rank": int(lr) if lr is not None else None,
+                "today_rank": int(tr) if tr is not None else None,
+            }
+    except Exception as e:
+        print(f"[6stats] archive_user_stats_and_ranks RPC failed — run supabase_archive_ranks_rpc.sql? {e!r}")
+    return _archive_stats_fallback_blocking(client, gid, uid, today_start, tomorrow_start)
+
+
+def _fetch_archive_hour_streak_blocking(guild_id: int, user_id: int) -> Optional[int]:
+    """Consecutive UTC hours with ≥1 archived message (RPC archive_consecutive_active_hours)."""
+    main = _sys.modules.get("__main__") or _sys.modules.get("index")
+    get_client = getattr(main, "_get_supabase_client", None)
+    if not callable(get_client):
+        return None
+    client = get_client()
+    if client is None:
+        return None
+    try:
+        r = client.rpc(
+            "archive_consecutive_active_hours",
+            {"p_guild_id": str(guild_id), "p_author_id": str(user_id)},
+        ).execute()
+        d = getattr(r, "data", None)
+        if isinstance(d, (int, float)):
+            return int(d)
+        if isinstance(d, str) and d.strip().lstrip("-").isdigit():
+            return int(d.strip())
+        if isinstance(d, list) and len(d) > 0:
+            v = d[0]
+            if isinstance(v, (int, float)):
+                return int(v)
+            if isinstance(v, dict):
+                for _k, val in v.items():
+                    if isinstance(val, (int, float)):
+                        return int(val)
+                    break
+    except Exception as e:
+        print(f"[6stats] archive_consecutive_active_hours RPC failed — run supabase_archive_ranks_rpc.sql? {e!r}")
+    return None
 
 
 def _fetch_bio_slug_blocking(user_id: int) -> Optional[str]:
@@ -793,6 +867,36 @@ class MessageStatsCog(commands.Cog):
 
         archive_stats = await asyncio.to_thread(_fetch_archive_stats_blocking, gid, uid)
         bio_slug = await asyncio.to_thread(_fetch_bio_slug_blocking, uid)
+        hour_streak = await asyncio.to_thread(_fetch_archive_hour_streak_blocking, gid, uid)
+
+        sess_count = int(row.session_msg_count or 0) if row else 0
+        is_active = sess_count >= ACTIVE_SESSION_MSG_THRESHOLD
+        now = time.time()
+        if is_active and row is not None and row.session_start_ts is not None:
+            dur_sec = max(0, int(now - row.session_start_ts))
+            h, rem = divmod(dur_sec, 3600)
+            mnt, _ = divmod(rem, 60)
+            activity_val = f"🟢 Active (session: **{h}**h **{mnt}**m)"
+        elif not is_active:
+            activity_val = (
+                "🔴 Inactive — need **≥3** messages within **1 hour** in the server "
+                f"(any channel the bot sees) for an active session."
+            )
+        else:
+            activity_val = "🔴 Inactive"
+
+        streak_days = row.streak_days if row else 0
+        hour_streak_n = int(hour_streak) if hour_streak is not None else None
+        if hour_streak_n is not None:
+            streak_val = (
+                f"🔥 **{streak_days:,}** day(s) on the **UTC calendar** (all channels, bot tally)\n"
+                f"⏱ **{hour_streak_n:,}** consecutive **UTC hour(s)** with a message in **mirrored 6xs archive** channels"
+            )
+        else:
+            streak_val = (
+                f"🔥 **{streak_days:,}** day(s) on the **UTC calendar** (all channels, bot tally)\n"
+                "⏱ Hour streak unavailable — run latest `supabase_archive_ranks_rpc.sql` in Supabase."
+            )
 
         ts = int(time.time())
         footer_parts = [f"Local time: <t:{ts}:t>"]
@@ -820,10 +924,22 @@ class MessageStatsCog(commands.Cog):
                 bio_line = f"Bio: {site}/{bio_slug}"
             else:
                 bio_line = f"Bio: set your slug at {site}/profile/edit (log in on the site)."
+            arch_lr = archive_stats.get("lifetime_rank")
+            arch_tr = archive_stats.get("today_rank")
+            if arch_n > 0 and arch_lr is not None:
+                life_line = f"💬 **{arch_n:,}** lifetime · 🏆 Rank **#{arch_lr}**"
+            else:
+                life_line = f"💬 **{arch_n:,}** lifetime · 🏆 Rank **—**"
+            if arch_today > 0 and arch_tr is not None:
+                today_line = f"📅 **{arch_today:,}** today (UTC) · 🏆 Rank **#{arch_tr}**"
+            else:
+                today_line = f"📅 **{arch_today:,}** today (UTC) · 🏆 Rank **—**"
+            rank_hint = ""
+            if (arch_n > 0 and arch_lr is None) or (arch_today > 0 and arch_tr is None):
+                rank_hint = "\n_Run `supabase_archive_ranks_rpc.sql` in Supabase to enable ranks._"
             archive_block = (
-                f"💬 **{arch_n:,}** lifetime · 📅 **{arch_today:,}** today (UTC, archived channels)\n"
-                f"{span_txt}\n{bio_line}\n"
-                f"_Only channels mirrored on 6xs.lol count here._"
+                f"{life_line}\n{today_line}\n{span_txt}\n{bio_line}{rank_hint}\n"
+                f"_Mirrored 6xs.lol channels only._"
             )
         else:
             archive_block = (
@@ -833,7 +949,10 @@ class MessageStatsCog(commands.Cog):
 
         em = discord.Embed(
             title="Message stats",
-            description="Counts from **6xs.lol** mirrored archive (same as the website).",
+            description=(
+                "**6xs.lol** block = mirrored archive only. **Activity** = server-wide session the bot tracks. "
+                "**Streaks** = UTC calendar days (server) + consecutive UTC active hours (archive)."
+            ),
             color=discord.Color.blurple(),
         )
         em.set_author(name=member.display_name, icon_url=member.display_avatar.url)
@@ -843,6 +962,8 @@ class MessageStatsCog(commands.Cog):
             value=archive_block,
             inline=False,
         )
+        em.add_field(name="Activity", value=activity_val, inline=False)
+        em.add_field(name="Streaks", value=streak_val, inline=False)
         em.set_footer(text=" · ".join(footer_parts))
 
         await ctx.send(embed=em)
