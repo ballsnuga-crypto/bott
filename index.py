@@ -52,6 +52,9 @@ MASS_JOIN_THRESHOLD = 8
 DELETE_DAYS_ON_BAN = 7
 MASS_ACTION_THRESHOLD = 2        # Max bans/kicks per moderator in 30 minutes
 MASS_ACTION_WINDOW = 1800        # 30 minutes in seconds
+UNVERIFIED_KICK_DELAY_SEC = 3600
+VERIFIED_MEMBER_ROLE_ID = 1498451320284119252
+SERVER_BOOSTER_ROLE_ID = 1498116952114204843
 
 # Pinterest New Saves Auto-Post
 AUTO_PFP_CHANNEL_ID = 1487256147701399725
@@ -359,6 +362,7 @@ join_cache = defaultdict(list)
 ban_cache = defaultdict(list)
 mod_action_cache = defaultdict(list)   # For moderator cooldown (ban & kick)
 channel_delete_cache = defaultdict(list)
+pending_unverified_kick: dict[int, asyncio.Task] = {}
 posted_pins = set()
 six_xs_data = {}  # "guild_id:user_id" -> {"xp": int, "last_msg": float}
 # guild_id -> {"until": unix_ts, "amount": int} — timed 6boost window (see SIX_XS_BOOST_DURATION_SEC)
@@ -3689,6 +3693,58 @@ async def kick(ctx, member: discord.Member, *, reason: str = None):
     await ctx.send(f"✅ **Kicked** {member} | Reason: {reason or 'No reason provided'}")
 
 
+@bot.command(name="kickallun")
+@commands.guild_only()
+@commands.has_permissions(kick_members=True)
+async def kickallun(ctx: commands.Context) -> None:
+    """Kick all unverified members (no 6XS Member role), excluding boosters."""
+    guild = ctx.guild
+    me = guild.me or guild.get_member(bot.user.id if bot.user else 0)
+    if me is None or not me.guild_permissions.kick_members:
+        return await ctx.send("❌ I need **Kick Members** permission.")
+
+    verified_role = guild.get_role(VERIFIED_MEMBER_ROLE_ID)
+    booster_role = guild.get_role(SERVER_BOOSTER_ROLE_ID)
+    if verified_role is None:
+        return await ctx.send(f"❌ Verified role not found: `{VERIFIED_MEMBER_ROLE_ID}`")
+    if booster_role is None:
+        return await ctx.send(f"❌ Booster role not found: `{SERVER_BOOSTER_ROLE_ID}`")
+
+    targets: list[discord.Member] = []
+    for m in guild.members:
+        if m.bot:
+            continue
+        if is_trusted(m):
+            continue
+        if verified_role in m.roles:
+            continue
+        if booster_role in m.roles:
+            continue
+        if m.top_role >= me.top_role:
+            continue
+        targets.append(m)
+
+    if not targets:
+        return await ctx.send("✅ No unverified non-booster members to kick.")
+
+    kicked = 0
+    failed = 0
+    for m in targets:
+        try:
+            await m.kick(reason=f"Bulk unverified kick by {ctx.author} (missing 6XS Member role)")
+            kicked += 1
+            t = pending_unverified_kick.pop(m.id, None)
+            if t:
+                t.cancel()
+        except Exception:
+            failed += 1
+
+    await ctx.send(
+        f"✅ `6kickallun` finished. Kicked: **{kicked}** · Failed: **{failed}** · "
+        f"Excluded boosters (`{SERVER_BOOSTER_ROLE_ID}`) and verified members (`{VERIFIED_MEMBER_ROLE_ID}`)."
+    )
+
+
 # ====================== PURGE ======================
 PURGE_AMOUNT_MIN = 1
 PURGE_AMOUNT_MAX = 500
@@ -3718,6 +3774,37 @@ async def purge_cmd(ctx: commands.Context, amount: int) -> None:
         pass
 
 
+async def _kick_if_still_unverified_after_delay(guild_id: int, user_id: int, delay_sec: int = UNVERIFIED_KICK_DELAY_SEC) -> None:
+    try:
+        await asyncio.sleep(max(1, int(delay_sec)))
+        guild = bot.get_guild(guild_id)
+        if guild is None:
+            return
+        member = guild.get_member(user_id)
+        if member is None:
+            return
+        if member.bot:
+            return
+        verified_role = guild.get_role(VERIFIED_MEMBER_ROLE_ID)
+        booster_role = guild.get_role(SERVER_BOOSTER_ROLE_ID)
+        if verified_role and verified_role in member.roles:
+            return
+        if booster_role and booster_role in member.roles:
+            return
+        me = guild.me or guild.get_member(bot.user.id if bot.user else 0)
+        if me is None or not me.guild_permissions.kick_members:
+            return
+        if member.top_role >= me.top_role:
+            return
+        await member.kick(reason="Auto-kick: unverified for 1 hour (excluding server boosters)")
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        print(f"[UNVERIFIED_KICK] delayed kick failed for {guild_id}:{user_id}: {e}")
+    finally:
+        pending_unverified_kick.pop(user_id, None)
+
+
 # ====================== ANTI-RAID ======================
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -3726,6 +3813,12 @@ async def on_member_join(member: discord.Member):
     join_cache[member.guild.id].append((now, member.id))
 
     asyncio.create_task(_welcome_banner_job(member.id, member.guild.id))
+    old_task = pending_unverified_kick.pop(member.id, None)
+    if old_task:
+        old_task.cancel()
+    pending_unverified_kick[member.id] = asyncio.create_task(
+        _kick_if_still_unverified_after_delay(member.guild.id, member.id)
+    )
 
     if len(join_cache[member.guild.id]) >= MASS_JOIN_THRESHOLD:
         for entry in join_cache[member.guild.id][-MASS_JOIN_THRESHOLD:]:
@@ -3752,6 +3845,9 @@ async def on_guild_role_delete(role: discord.Role):
 
 @bot.event
 async def on_member_remove(member: discord.Member):
+    old_task = pending_unverified_kick.pop(member.id, None)
+    if old_task:
+        old_task.cancel()
     guild = member.guild
     now = time.time()
 
