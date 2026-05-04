@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import sys
 from pathlib import Path
 from typing import Optional, Union
@@ -17,15 +18,15 @@ PFP_SIZE = 280
 PFP_CENTER = (488, 495)
 PFP_TOP_LEFT = (PFP_CENTER[0] - PFP_SIZE // 2, PFP_CENTER[1] - PFP_SIZE // 2)
 
-# Text block: upper-right, same left edge for both lines — smaller type, clear of 6XS logo
+# Text block: upper-right, same left edge — large Creepster/Chiller-style type (clear of 6XS logo)
 USER_TEXT_LEFT_X = 698
-USER_TEXT_TOP_Y = 252
-USER_FONT_PX = 96
-USER_STROKE = 3
+USER_TEXT_TOP_Y = 228
+USER_FONT_PX = 118
+USER_STROKE = 4
 
-MEMBER_FONT_PX = 50
-MEMBER_STROKE = 2
-TEXT_LINE_GAP = 14
+MEMBER_FONT_PX = 76
+MEMBER_STROKE = 3
+TEXT_LINE_GAP = 20
 
 RED_OUTLINE = (165, 0, 0)  # #A50000
 FILL = (0, 0, 0)
@@ -43,15 +44,25 @@ def _find_base_image() -> Path:
     )
 
 
-def _load_font(size_px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    candidates = [
+def _banner_font_paths() -> list[Path]:
+    """Prefer bundled / horror display fonts so we never fall back to tiny bitmap default."""
+    win = Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts"
+    return [
+        _SCRIPT_DIR / "fonts" / "Creepster-Regular.ttf",
+        _SCRIPT_DIR / "fonts" / "Nosifer-Regular.ttf",
+        win / "CHILLER.TTF",
+        win / "chiller.ttf",
+        win / "JOKERMAN.TTF",
         _SCRIPT_DIR / "BebasNeue-Regular.ttf",
         _SCRIPT_DIR / "fonts" / "BebasNeue-Regular.ttf",
-        Path(r"C:\Windows\Fonts\impact.ttf"),
+        win / "impact.ttf",
         Path("/usr/share/fonts/truetype/msttcorefonts/Impact.ttf"),
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
     ]
-    for p in candidates:
+
+
+def _load_font(size_px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    for p in _banner_font_paths():
         try:
             if p.is_file():
                 return ImageFont.truetype(str(p), size=size_px)
@@ -79,7 +90,7 @@ def _circle_avatar(pfp: Image.Image, size: int) -> Image.Image:
     return out
 
 
-def _truncate_username(raw: str, max_chars: int = 22) -> str:
+def _truncate_username(raw: str, max_chars: int = 18) -> str:
     u = (raw or "USER").upper()
     if len(u) <= max_chars:
         return u
