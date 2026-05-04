@@ -52,7 +52,6 @@ MASS_JOIN_THRESHOLD = 8
 DELETE_DAYS_ON_BAN = 7
 MASS_ACTION_THRESHOLD = 2        # Max bans/kicks per moderator in 30 minutes
 MASS_ACTION_WINDOW = 1800        # 30 minutes in seconds
-UNVERIFIED_KICK_DELAY_SEC = 3600
 VERIFIED_MEMBER_ROLE_ID = 1498451320284119252
 SERVER_BOOSTER_ROLE_ID = 1498116952114204843
 
@@ -180,7 +179,7 @@ ARCHIVE_TIMER_CHANNEL_LABELS: dict[str, str] = {
 ARCHIVE_TIMER_CHANNEL_INTERVALS_SEC: dict[str, int] = {
     "1498122216800522261": 24 * 60 * 60,
     "1498278738096295936": 24 * 60 * 60,
-    "1498521334198702223": 30 * 60,
+    "1498521334198702223": 60 * 60,
 }
 
 # 6gif — needs ffmpeg on PATH (or FFMPEG_PATH in .env)
@@ -362,7 +361,6 @@ join_cache = defaultdict(list)
 ban_cache = defaultdict(list)
 mod_action_cache = defaultdict(list)   # For moderator cooldown (ban & kick)
 channel_delete_cache = defaultdict(list)
-pending_unverified_kick: dict[int, asyncio.Task] = {}
 posted_pins = set()
 six_xs_data = {}  # "guild_id:user_id" -> {"xp": int, "last_msg": float}
 # guild_id -> {"until": unix_ts, "amount": int} — timed 6boost window (see SIX_XS_BOOST_DURATION_SEC)
@@ -405,7 +403,7 @@ _uplift_state: dict[str, Any] = {
     "dm_reply_budget_by_user": {},
 }
 _uplift_recent_by_user: defaultdict[int, list[str]] = defaultdict(list)
-_uplift_msg_times_by_user: defaultdict[int, list[float]] = defaultdict(list)
+_uplift_msg_times_by_user: defaultdict[int, list[float]] = defaultdict(list)    
 UPLIFT_VIBE_KEYWORDS = (
     "tired", "grinding", "stressed", "long day", "rough", "exhausted",
     "burnt", "burned out", "drained", "overwhelmed", "sad", "anxious",
@@ -3939,9 +3937,6 @@ async def kickallun(ctx: commands.Context) -> None:
                 pass
             await m.kick(reason=f"Bulk unverified kick by {ctx.author} (missing 6XS Member role)")
             kicked += 1
-            t = pending_unverified_kick.pop(m.id, None)
-            if t:
-                t.cancel()
         except Exception:
             failed += 1
 
@@ -3980,41 +3975,6 @@ async def purge_cmd(ctx: commands.Context, amount: int) -> None:
         pass
 
 
-async def _kick_if_still_unverified_after_delay(guild_id: int, user_id: int, delay_sec: int = UNVERIFIED_KICK_DELAY_SEC) -> None:
-    try:
-        await asyncio.sleep(max(1, int(delay_sec)))
-        guild = bot.get_guild(guild_id)
-        if guild is None:
-            return
-        member = guild.get_member(user_id)
-        if member is None:
-            return
-        if member.bot:
-            return
-        verified_role = guild.get_role(VERIFIED_MEMBER_ROLE_ID)
-        booster_role = guild.get_role(SERVER_BOOSTER_ROLE_ID)
-        if verified_role and verified_role in member.roles:
-            return
-        if booster_role and booster_role in member.roles:
-            return
-        me = guild.me or guild.get_member(bot.user.id if bot.user else 0)
-        if me is None or not me.guild_permissions.kick_members:
-            return
-        if member.top_role >= me.top_role:
-            return
-        try:
-            await member.send("You've been kicked from 6XS for not verifying\nJoin back here discord.gg/6xz")
-        except Exception:
-            pass
-        await member.kick(reason="Auto-kick: unverified for 1 hour (excluding server boosters)")
-    except asyncio.CancelledError:
-        return
-    except Exception as e:
-        print(f"[UNVERIFIED_KICK] delayed kick failed for {guild_id}:{user_id}: {e}")
-    finally:
-        pending_unverified_kick.pop(user_id, None)
-
-
 # ====================== ANTI-RAID ======================
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -4023,12 +3983,6 @@ async def on_member_join(member: discord.Member):
     join_cache[member.guild.id].append((now, member.id))
 
     asyncio.create_task(_welcome_banner_job(member.id, member.guild.id))
-    old_task = pending_unverified_kick.pop(member.id, None)
-    if old_task:
-        old_task.cancel()
-    pending_unverified_kick[member.id] = asyncio.create_task(
-        _kick_if_still_unverified_after_delay(member.guild.id, member.id)
-    )
 
     if len(join_cache[member.guild.id]) >= MASS_JOIN_THRESHOLD:
         for entry in join_cache[member.guild.id][-MASS_JOIN_THRESHOLD:]:
@@ -4055,9 +4009,6 @@ async def on_guild_role_delete(role: discord.Role):
 
 @bot.event
 async def on_member_remove(member: discord.Member):
-    old_task = pending_unverified_kick.pop(member.id, None)
-    if old_task:
-        old_task.cancel()
     guild = member.guild
     now = time.time()
 
