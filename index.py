@@ -846,7 +846,11 @@ async def _apply_guild_structure_backup(guild: discord.Guild, data: dict[str, An
 
 
 def xp_cost_to_advance_from(current_6xs: int) -> int:
-    return 60 + 25 * current_6xs
+    lvl = max(1, int(current_6xs))
+    # Keep early progression unchanged; ease scaling for higher levels.
+    if lvl <= 20:
+        return 60 + 25 * lvl
+    return 560 + 18 * (lvl - 20)
 
 
 def min_raw_xp_for_6xs_level(target_level: int) -> int:
