@@ -370,7 +370,6 @@ mod_action_cache = defaultdict(list)   # For moderator cooldown (ban & kick)
 channel_delete_cache = defaultdict(list)
 posted_pins = set()
 six_xs_data = {}  # "guild_id:user_id" -> {"xp": int, "last_msg": float}
-_six_xs_supabase_mode = "unknown"  # "guild_scoped" | "legacy_composite_user_id"
 # guild_id -> {"until": unix_ts, "amount": int} — timed 6boost window (see SIX_XS_BOOST_DURATION_SEC)
 six_xs_boost: dict[int, dict] = {}
 _six_xs_lock = asyncio.Lock()
@@ -572,33 +571,38 @@ def load_six_xs():
 
 
 def save_six_xs_sync():
-    global _six_xs_supabase_mode
     client = _get_supabase_client()
     if client is None:
         return
     try:
-        payload_legacy: list[dict[str, Any]] = []
         payload_guild: list[dict[str, Any]] = []
+        skipped = 0
         for key, entry in six_xs_data.items():
-            user_id = str(key).strip()
-            if not user_id:
+            raw_key = str(key).strip()
+            if not raw_key:
+                continue
+            gid, uid = _six_xs_split_key(raw_key)
+            if not gid or not uid:
+                skipped += 1
                 continue
             xp = int(entry.get("xp", 0))
             _, level = total_xp_and_6xs(xp)
-            payload_legacy.append({"user_id": user_id, "xp": xp, "level": level})
-            gid, uid = _six_xs_split_key(user_id)
-            if gid and uid:
-                payload_guild.append({"guild_id": gid, "user_id": uid, "xp": xp, "level": level})
-        if not payload_legacy:
+            payload_guild.append(
+                {
+                    "guild_id": gid,
+                    "user_id": uid,
+                    "xp": xp,
+                    "level": level,
+                    "last_msg": float(entry.get("last_msg", 0.0) or 0.0),
+                    "session_start": float(entry.get("session_start", 0.0) or 0.0),
+                    "session_hours_announced": int(entry.get("session_hours_announced", 0) or 0),
+                }
+            )
+        if not payload_guild:
             return
-        if _six_xs_supabase_mode in ("unknown", "guild_scoped") and payload_guild:
-            try:
-                client.table("user_stats").upsert(payload_guild, on_conflict="guild_id,user_id").execute()
-                _six_xs_supabase_mode = "guild_scoped"
-                return
-            except Exception:
-                _six_xs_supabase_mode = "legacy_composite_user_id"
-        client.table("user_stats").upsert(payload_legacy).execute()
+        client.table("user_stats").upsert(payload_guild, on_conflict="guild_id,user_id").execute()
+        if skipped:
+            print(f"[6XS] save skipped {skipped} malformed key(s) without guild_id:user_id format.")
     except Exception as e:
         print(f"[6XS] Could not save Supabase user_stats: {e}")
 
