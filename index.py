@@ -154,9 +154,16 @@ PINTEREST_POSTED_FILE = SCRIPT_DIR / "pinterest_posted.json"
 MASS_BAN_WINDOW = 1800
 MASS_BAN_THRESHOLD = 5
 
-# OpenRouter AI
-OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL") or os.getenv("GROK_MODEL", "tngtech/deepseek-r1t2-chimera")
+# Venice AI (OpenAI-compatible chat/completions). Override with OPENROUTER_* to use OpenRouter instead.
+CHAT_COMPLETIONS_URL = os.getenv(
+    "OPENROUTER_API_URL",
+    "https://api.venice.ai/api/v1/chat/completions",
+)
+CHAT_COMPLETION_MODEL = (
+    os.getenv("OPENROUTER_MODEL")
+    or os.getenv("GROK_MODEL")
+    or "venice-uncensored-1-2"
+)
 
 # Confessions: set channel ID, or leave 0 to use a channel named "confessions"
 CONFESSIONS_CHANNEL_ID = 0
@@ -1483,7 +1490,9 @@ async def maybe_punish_discord_link(message: discord.Message) -> bool:
 
 def _grok_api_key() -> Optional[str]:
     return (
-        os.getenv("OPENROUTER_API_KEY")
+        os.getenv("VENICE_API_KEY")
+        or os.getenv("VENICE_INFERENCE_KEY")
+        or os.getenv("OPENROUTER_API_KEY")
         or os.getenv("XAI_API_KEY")
         or os.getenv("GROK_API_KEY")
     )
@@ -1606,10 +1615,10 @@ async def grok_chat(
 ) -> str:
     key = _grok_api_key()
     if not key:
-        raise RuntimeError("Missing OPENROUTER_API_KEY")
+        raise RuntimeError("Missing VENICE_API_KEY (or OPENROUTER_API_KEY)")
 
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": CHAT_COMPLETION_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -1620,19 +1629,20 @@ async def grok_chat(
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://6xs.lol",
-        "X-Title": "6XS Bot",
     }
+    if "openrouter.ai" in CHAT_COMPLETIONS_URL:
+        headers["HTTP-Referer"] = "https://6xs.lol"
+        headers["X-Title"] = "6XS Bot"
     async with aiohttp.ClientSession() as session:
-        async with session.post(OPENROUTER_API_URL, headers=headers, json=payload) as resp:
+        async with session.post(CHAT_COMPLETIONS_URL, headers=headers, json=payload) as resp:
             body = await resp.text()
             if resp.status != 200:
-                raise RuntimeError(f"OpenRouter API {resp.status}: {body[:500]}")
+                raise RuntimeError(f"Chat API {resp.status}: {body[:500]}")
             data = json.loads(body)
     try:
         return data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Bad OpenRouter response: {body[:400]}") from e
+        raise RuntimeError(f"Bad chat API response: {body[:400]}") from e
 
 
 async def grok_complete(user_content: str) -> str:
@@ -3580,7 +3590,10 @@ async def topic_cmd(ctx):
     if not isinstance(ch, (discord.TextChannel, discord.Thread)):
         return await ctx.send("Use **`6topic`** in a text channel or thread.", delete_after=10)
     if not _grok_api_key():
-        return await ctx.send("AI isn't configured (set **OPENROUTER_API_KEY**).", delete_after=12)
+        return await ctx.send(
+            "AI isn't configured — set **VENICE_API_KEY** (or **OPENROUTER_API_KEY**).",
+            delete_after=12,
+        )
     me = ctx.guild.me
     if me:
         perms = ch.permissions_for(me)
@@ -3672,7 +3685,7 @@ async def summarize_cmd(ctx: commands.Context) -> None:
         return await ctx.send("Use `6summarize` in a server channel.", delete_after=8)
     if not _grok_api_key():
         return await ctx.send(
-            "AI isn’t configured — set **OPENROUTER_API_KEY** in the environment.",
+            "AI isn’t configured — set **VENICE_API_KEY** or **OPENROUTER_API_KEY** in the environment.",
             delete_after=12,
         )
 
@@ -3749,7 +3762,7 @@ async def ai_cmd(ctx, *, question: str):
         return await ctx.send(f"Usage: **`{PREFIX}ai** <your question>`", delete_after=10)
     if not _grok_api_key():
         return await ctx.send(
-            "AI isn’t configured — set **OPENROUTER_API_KEY** in the environment.",
+            "AI isn’t configured — set **VENICE_API_KEY** or **OPENROUTER_API_KEY** in the environment.",
             delete_after=12,
         )
 
