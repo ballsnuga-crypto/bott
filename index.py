@@ -547,6 +547,9 @@ def load_six_xs():
             if not user_id:
                 continue
             gid = str(row.get("guild_id", "")).strip()
+            # Legacy migration rows may have guild_id='0' placeholder.
+            if gid == "0":
+                gid = ""
             if gid and ":" not in user_id:
                 key = f"{gid}:{user_id}"
             elif ":" in user_id:
