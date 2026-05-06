@@ -258,7 +258,7 @@ goal: make people want to reply. no apology for posting.
 hard no: slurs by protected class; minors in any sexual context; praising real-world violence or mass attacks; credible threats; doxxing.
 no "as an ai". no hashtags. no bullet lists."""
 
-# 6ai — direct Q&A, one paragraph (Grok)
+# 6ai — direct Q&A, one paragraph (inference API)
 GROK_SUMMARIZE_SYSTEM_PROMPT = """You are an expert at making simple summaries of Discord chats.
 
 Rules:
@@ -281,7 +281,7 @@ GROK_AI_SYSTEM_PROMPT = """You answer questions for a Discord bot. Output rules 
 
 - Reply in **exactly one paragraph**: one continuous block of prose. No bullet lists, no numbered lists, no headers, no multiple paragraphs separated by blank lines.
 - Be **direct** — no "as an AI", no hedging opener ("that's a great question"), no filler conclusion. Say what you think or know.
-- Stay under ~200 words in that single paragraph so it stays readable in chat.
+- Aim for **~280–400 words** when the topic needs explanation; shorter is fine if a few sentences is enough — but don't artificially cut helpful detail.
 
 Hard no: sexual content involving minors; credible instructions for serious real-world harm; doxxing; slurs against race, religion, gender, sexuality, or disability used as slurs.
 
@@ -3756,7 +3756,7 @@ async def summarize_cmd(ctx: commands.Context) -> None:
 
 @bot.command(name="ai", aliases=["ask", "grok"])
 async def ai_cmd(ctx, *, question: str):
-    """`6ai <question>` — one short paragraph answer via Grok (no essay)."""
+    """`6ai <question>` — one paragraph answer (a bit longer when useful; no bullet essay)."""
     q = (question or "").strip()
     if len(q) < 2:
         return await ctx.send(f"Usage: **`{PREFIX}ai** <your question>`", delete_after=10)
@@ -3771,11 +3771,11 @@ async def ai_cmd(ctx, *, question: str):
             raw = await grok_chat(
                 GROK_AI_SYSTEM_PROMPT,
                 q[:8000],
-                max_tokens=520,
+                max_tokens=900,
                 temperature=0.9,
             )
         except Exception as e:
-            return await ctx.send(f"Grok error: `{e}`", delete_after=15)
+            return await ctx.send(f"AI error: `{e}`", delete_after=15)
 
     out = " ".join((raw or "").strip().split())
     if len(out) > 2000:
