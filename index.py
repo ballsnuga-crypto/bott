@@ -370,6 +370,7 @@ mod_action_cache = defaultdict(list)   # For moderator cooldown (ban & kick)
 channel_delete_cache = defaultdict(list)
 posted_pins = set()
 six_xs_data = {}  # "guild_id:user_id" -> {"xp": int, "last_msg": float}
+_six_xs_supabase_mode = "unknown"  # "guild_scoped" | "legacy_composite_user_id"
 # guild_id -> {"until": unix_ts, "amount": int} — timed 6boost window (see SIX_XS_BOOST_DURATION_SEC)
 six_xs_boost: dict[int, dict] = {}
 _six_xs_lock = asyncio.Lock()
@@ -503,6 +504,15 @@ def _get_supabase_client() -> Optional[SupabaseClient]:
     return _supabase_client
 
 
+def _six_xs_split_key(key: str) -> tuple[Optional[str], str]:
+    s = str(key or "").strip()
+    if ":" in s:
+        a, b = s.split(":", 1)
+        if a and b:
+            return a, b
+    return None, s
+
+
 def load_six_xs():
     """Load XP state from Supabase `user_stats` into in-memory cache."""
     global six_xs_data
@@ -511,13 +521,15 @@ def load_six_xs():
         six_xs_data = {}
         return
     try:
+        guild_ids = [str(g.id) for g in getattr(bot, "guilds", []) if getattr(g, "id", None)]
+        default_gid = guild_ids[0] if guild_ids else None
         rows: list[dict[str, Any]] = []
         page_size = 1000
         start = 0
         while True:
             resp = (
                 client.table("user_stats")
-                .select("user_id,xp,level")
+                .select("*")
                 .range(start, start + page_size - 1)
                 .execute()
             )
@@ -534,8 +546,22 @@ def load_six_xs():
             user_id = str(row.get("user_id", "")).strip()
             if not user_id:
                 continue
+            gid = str(row.get("guild_id", "")).strip()
+            if gid and ":" not in user_id:
+                key = f"{gid}:{user_id}"
+            elif ":" in user_id:
+                key = user_id
+            elif default_gid:
+                key = f"{default_gid}:{user_id}"
+            else:
+                continue
             xp = int(row.get("xp", 0) or 0)
-            out[user_id] = {"xp": xp, "last_msg": 0.0}
+            out[key] = {
+                "xp": xp,
+                "last_msg": float(row.get("last_msg", 0.0) or 0.0),
+                "session_start": float(row.get("session_start", 0.0) or 0.0),
+                "session_hours_announced": int(row.get("session_hours_announced", 0) or 0),
+            }
         six_xs_data = out
     except Exception as e:
         print(f"[6XS] Could not load Supabase user_stats: {e}")
@@ -543,21 +569,33 @@ def load_six_xs():
 
 
 def save_six_xs_sync():
+    global _six_xs_supabase_mode
     client = _get_supabase_client()
     if client is None:
         return
     try:
-        payload: list[dict[str, Any]] = []
+        payload_legacy: list[dict[str, Any]] = []
+        payload_guild: list[dict[str, Any]] = []
         for key, entry in six_xs_data.items():
             user_id = str(key).strip()
             if not user_id:
                 continue
             xp = int(entry.get("xp", 0))
             _, level = total_xp_and_6xs(xp)
-            payload.append({"user_id": user_id, "xp": xp, "level": level})
-        if not payload:
+            payload_legacy.append({"user_id": user_id, "xp": xp, "level": level})
+            gid, uid = _six_xs_split_key(user_id)
+            if gid and uid:
+                payload_guild.append({"guild_id": gid, "user_id": uid, "xp": xp, "level": level})
+        if not payload_legacy:
             return
-        client.table("user_stats").upsert(payload).execute()
+        if _six_xs_supabase_mode in ("unknown", "guild_scoped") and payload_guild:
+            try:
+                client.table("user_stats").upsert(payload_guild, on_conflict="guild_id,user_id").execute()
+                _six_xs_supabase_mode = "guild_scoped"
+                return
+            except Exception:
+                _six_xs_supabase_mode = "legacy_composite_user_id"
+        client.table("user_stats").upsert(payload_legacy).execute()
     except Exception as e:
         print(f"[6XS] Could not save Supabase user_stats: {e}")
 
@@ -892,36 +930,23 @@ def _member_6xs_milestone_from_roles(member: discord.Member) -> int:
 
 
 def _six_xs_sync_raw_to_milestone_roles(entry: dict, member: discord.Member) -> bool:
-    """If milestone roles imply a higher tier than stored XP, raise stored XP so level matches."""
-    if member.bot:
-        return False
-    raw = int(entry.get("xp", 0))
-    _, lvl_xp = total_xp_and_6xs(raw)
-    lvl_role = _member_6xs_milestone_from_roles(member)
-    if lvl_role <= lvl_xp:
-        return False
-    need_raw = min_raw_xp_for_6xs_level(lvl_role)
-    if need_raw <= raw:
-        return False
-    entry["xp"] = need_raw
-    return True
+    """Disabled: XP is authoritative from Supabase; never overwrite XP from role state."""
+    return False
 
 
 async def _six_xs_ensure_entry_synced(guild_id: int, member: Optional[discord.Member]) -> None:
-    """Persist XP floor from milestone roles so rank/progression stay consistent."""
+    """Ensure in-memory entry exists; XP itself is authoritative from Supabase."""
     if member is None or member.bot:
         return
     key = f"{guild_id}:{member.id}"
     async with _six_xs_lock:
-        e = six_xs_data.setdefault(key, {"xp": 0, "last_msg": 0.0})
-        if _six_xs_sync_raw_to_milestone_roles(e, member):
-            save_six_xs_sync()
+        six_xs_data.setdefault(key, {"xp": 0, "last_msg": 0.0})
 
 
 def _build_six_xs_leaderboard_rows(guild: discord.Guild, limit: int) -> list[tuple[int, int, int, int, int, str]]:
     """
     All non-bot members + leavers still in JSON.
-    Rank level = max(chat-derived 6xs, milestone from SIX_XS_ROLES).
+    Rank level = chat-derived 6xs from stored XP.
     Sort: rank level, then lifetime XP, then name.
     Tuple: (user_id, raw_xp, rank_level, lvl_from_xp_only, lvl_from_roles_only, label)
     """
@@ -935,11 +960,9 @@ def _build_six_xs_leaderboard_rows(guild: discord.Guild, limit: int) -> list[tup
             continue
         seen.add(m.id)
         raw = int(six_xs_data.get(f"{gid}:{m.id}", {}).get("xp", 0))
-        lvl_role = _member_6xs_milestone_from_roles(m)
-        eff_raw = max(raw, min_raw_xp_for_6xs_level(lvl_role))
-        _, lvl_xp = total_xp_and_6xs(eff_raw)
+        _, lvl_xp = total_xp_and_6xs(raw)
         rank_lvl = lvl_xp
-        rows.append((m.id, eff_raw, rank_lvl, lvl_xp, lvl_role, m.display_name))
+        rows.append((m.id, raw, rank_lvl, lvl_xp, 1, m.display_name))
 
     for key, entry in six_xs_data.items():
         if not key.startswith(prefix):
@@ -4231,12 +4254,9 @@ async def maybe_award_six_xs(message: discord.Message):
     session_bonus = 0
     async with _six_xs_lock:
         entry = six_xs_data.setdefault(key, {"xp": 0, "last_msg": 0.0})
-        synced = _six_xs_sync_raw_to_milestone_roles(entry, m) if m else False
         last_msg = _six_xs_normalize_last_msg_ts(entry.get("last_msg"), now)
         # Do not write last_msg until we actually award XP — avoids desync / skipped cooldowns.
         if now - last_msg < cd:
-            if synced:
-                save_six_xs_sync()
             return
 
         # Active-session tracking: a "session" is continuous XP-earning activity with no gap
@@ -4287,7 +4307,7 @@ async def maybe_award_six_xs(message: discord.Message):
         except discord.HTTPException as e:
             print(f"[6XS] session-hour announce failed: {e}")
 
-    # Level-ups and roles follow **chat XP** only; milestone roles already merged into stored XP above.
+    # Level-ups and roles follow chat XP only.
     if new_chat_lvl > old_chat_lvl:
         # Milestone 3 = image perms — fire whenever they *cross* 3 (even 2→5 in one message).
         if old_chat_lvl < 3 <= new_chat_lvl:
@@ -4453,7 +4473,7 @@ async def cmd_six_xs_leaderboard(ctx, limit: Optional[int] = None):
         color=discord.Color.dark_teal(),
     )
     em.set_footer(
-        text=f"Top {len(rows)} · rank = chat XP (milestone roles bump stored XP to match) · Yours: 6xs {my_lvl_xp}"
+        text=f"Top {len(rows)} · rank = chat XP from Supabase · Yours: 6xs {my_lvl_xp}"
     )
     await ctx.send(embed=em)
 
